@@ -1,534 +1,642 @@
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
+local Stats = game:GetService("Stats")
 
 local LocalPlayer = Players.LocalPlayer
-local Camera = workspace.CurrentCamera
 
 local Config = {
 	Enabled = true,
 
-	TargetPriority = true,
+	PriorityEnabled = true,
+	PriorityStuds = 19,
 	PrioritizeNearest = true,
 	PrioritizeEnemies = true,
-	PriorityStuds = 19,
+
+	OnlyPriorityRange = true,
 	MaxDistance = 250,
 
-	TextColor = Color3.fromRGB(255, 55, 55),
-	StrokeColor = Color3.fromRGB(255, 150, 150),
-	StrokeEnabled = true,
-	StrokeTransparency = 0.2,
-	StrokeThickness = 1,
+	DamageEnabled = true,
+	DamageDelay = 0.05,
+	DamageDuration = 0.8,
+	DamageRise = 2.5,
 
 	TextSize = 24,
 	Font = Enum.Font.GothamBold,
+	TextColor = Color3.fromRGB(255, 45, 45),
+	TextTransparency = 0,
 
-	Delay = 0.5,
-	Duration = 0.8,
-	RiseHeight = 2.5,
-	RandomOffset = 1.2,
+	StrokeEnabled = true,
+	StrokeColor = Color3.fromRGB(255, 150, 150),
+	StrokeTransparency = 0.2,
+	StrokeThickness = 1,
+
+	RandomPosition = true,
+	RandomX = 1.2,
+	RandomY = 0.7,
+	RandomZ = 1.2,
+
+	ThroughWalls = false,
 
 	MouseDamage = false,
-	MouseOffsetX = 0,
-	MouseOffsetY = -35,
+	MouseOffsetX = 22,
+	MouseOffsetY = 0,
 
 	ShowFPS = false,
-	FPSOffsetX = 18,
-	FPSOffsetY = 18,
+	ShowMS = false,
+	PerformanceOffsetX = 22,
+	PerformanceOffsetY = 20,
 
-	UpdateRate = 0.05
+	DeathEnabled = true,
+	DeathText = "Dead",
+	DeathDuration = 1.1,
+	DeathRise = 3,
+	DeathTextSize = 25,
+	DeathTextColor = Color3.fromRGB(35, 35, 35),
+	DeathStrokeEnabled = true,
+	DeathStrokeColor = Color3.fromRGB(220, 220, 220),
+	DeathStrokeTransparency = 0.25,
+
+	UpdateRate = 0.025
 }
 
 local Connections = {}
 local Tracked = {}
-local LastTarget = nil
-local FPS = 0
-local FrameCounter = 0
-local LastFPSTime = os.clock()
+local CurrentTarget = nil
+
+local LastTouchPosition = Vector2.new(400, 300)
+local MousePosition = Vector2.new(0, 0)
 
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "DamageIndicator"
 ScreenGui.ResetOnSpawn = false
-ScreenGui.IgnoreGuiInset = true
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
-local function CreateCorner(parent, radius)
-	local Corner = Instance.new("UICorner")
-	Corner.CornerRadius = UDim.new(0, radius)
-	Corner.Parent = parent
-	return Corner
-end
+local Main = Instance.new("Frame")
+Main.Size = UDim2.fromOffset(330, 460)
+Main.Position = UDim2.new(0.5, -165, 0.5, -230)
+Main.BackgroundColor3 = Color3.fromRGB(20, 20, 24)
+Main.BorderSizePixel = 0
+Main.Visible = true
+Main.Parent = ScreenGui
 
-local function CreateStroke(parent, color, transparency, thickness)
-	local Stroke = Instance.new("UIStroke")
-	Stroke.Color = color
-	Stroke.Transparency = transparency
-	Stroke.Thickness = thickness
-	Stroke.Parent = parent
-	return Stroke
-end
+local MainCorner = Instance.new("UICorner")
+MainCorner.CornerRadius = UDim.new(0, 12)
+MainCorner.Parent = Main
 
-local function MakeDraggable(Frame, Handle)
-	local Dragging = false
-	local DragStart
-	local StartPosition
-
-	local function Update(Input)
-		local Delta = Input.Position - DragStart
-		Frame.Position = UDim2.new(
-			StartPosition.X.Scale,
-			StartPosition.X.Offset + Delta.X,
-			StartPosition.Y.Scale,
-			StartPosition.Y.Offset + Delta.Y
-		)
-	end
-
-	Handle.InputBegan:Connect(function(Input)
-		if Input.UserInputType == Enum.UserInputType.MouseButton1
-			or Input.UserInputType == Enum.UserInputType.Touch then
-
-			Dragging = true
-			DragStart = Input.Position
-			StartPosition = Frame.Position
-
-			local Connection
-			Connection = Input.Changed:Connect(function()
-				if Input.UserInputState == Enum.UserInputState.End then
-					Dragging = false
-					Connection:Disconnect()
-				end
-			end)
-		end
-	end)
-
-	UserInputService.InputChanged:Connect(function(Input)
-		if Dragging and (
-			Input.UserInputType == Enum.UserInputType.MouseMovement
-			or Input.UserInputType == Enum.UserInputType.Touch
-		) then
-			Update(Input)
-		end
-	end)
-end
-
-local ConfigButton = Instance.new("TextButton")
-ConfigButton.Name = "ConfigButton"
-ConfigButton.Size = UDim2.fromOffset(44, 44)
-ConfigButton.Position = UDim2.new(0, 15, 0.5, -22)
-ConfigButton.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
-ConfigButton.Text = "⚙"
-ConfigButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-ConfigButton.TextSize = 21
-ConfigButton.Font = Enum.Font.GothamBold
-ConfigButton.Parent = ScreenGui
-
-CreateCorner(ConfigButton, 12)
-CreateStroke(ConfigButton, Color3.fromRGB(65, 65, 75), 0, 1)
-
-local Window = Instance.new("Frame")
-Window.Name = "ConfigWindow"
-Window.Size = UDim2.fromOffset(340, 460)
-Window.Position = UDim2.new(0.5, -170, 0.5, -230)
-Window.BackgroundColor3 = Color3.fromRGB(16, 16, 21)
-Window.Visible = false
-Window.Parent = ScreenGui
-
-CreateCorner(Window, 14)
-CreateStroke(Window, Color3.fromRGB(55, 55, 65), 0, 1)
-
-local Header = Instance.new("Frame")
-Header.Size = UDim2.new(1, 0, 0, 52)
+local Header = Instance.new("TextLabel")
+Header.Size = UDim2.new(1, -50, 0, 45)
+Header.Position = UDim2.fromOffset(15, 0)
 Header.BackgroundTransparency = 1
-Header.Parent = Window
-
-local Title = Instance.new("TextLabel")
-Title.Size = UDim2.new(1, -60, 1, 0)
-Title.Position = UDim2.fromOffset(15, 0)
-Title.BackgroundTransparency = 1
-Title.Text = "Damage Indicator"
-Title.TextColor3 = Color3.fromRGB(255, 255, 255)
-Title.TextSize = 19
-Title.Font = Enum.Font.GothamBold
-Title.TextXAlignment = Enum.TextXAlignment.Left
-Title.Parent = Header
+Header.Text = "Damage Indicator"
+Header.TextColor3 = Color3.new(1, 1, 1)
+Header.TextSize = 17
+Header.Font = Enum.Font.GothamBold
+Header.TextXAlignment = Enum.TextXAlignment.Left
+Header.Parent = Main
 
 local Close = Instance.new("TextButton")
-Close.Size = UDim2.fromOffset(40, 40)
-Close.Position = UDim2.new(1, -47, 0, 6)
-Close.BackgroundTransparency = 1
+Close.Size = UDim2.fromOffset(35, 35)
+Close.Position = UDim2.new(1, -42, 0, 5)
+Close.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
 Close.Text = "×"
-Close.TextColor3 = Color3.fromRGB(220, 220, 220)
-Close.TextSize = 27
+Close.TextColor3 = Color3.new(1, 1, 1)
+Close.TextSize = 22
 Close.Font = Enum.Font.GothamBold
-Close.Parent = Header
+Close.Parent = Main
 
-local Content = Instance.new("ScrollingFrame")
-Content.Name = "Sections"
-Content.Size = UDim2.new(1, -18, 1, -62)
-Content.Position = UDim2.fromOffset(9, 57)
-Content.BackgroundTransparency = 1
-Content.BorderSizePixel = 0
-Content.ScrollBarThickness = 3
-Content.CanvasSize = UDim2.new()
-Content.Parent = Window
+local CloseCorner = Instance.new("UICorner")
+CloseCorner.CornerRadius = UDim.new(0, 8)
+CloseCorner.Parent = Close
 
-local ContentLayout = Instance.new("UIListLayout")
-ContentLayout.Padding = UDim.new(0, 8)
-ContentLayout.SortOrder = Enum.SortOrder.LayoutOrder
-ContentLayout.Parent = Content
+local OpenButton = Instance.new("TextButton")
+OpenButton.Size = UDim2.fromOffset(45, 45)
+OpenButton.Position = UDim2.fromOffset(15, 200)
+OpenButton.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+OpenButton.Text = "⚙"
+OpenButton.TextSize = 20
+OpenButton.TextColor3 = Color3.new(1, 1, 1)
+OpenButton.Visible = false
+OpenButton.Parent = ScreenGui
 
-local function UpdateCanvas()
-	Content.CanvasSize = UDim2.fromOffset(
-		0,
-		ContentLayout.AbsoluteContentSize.Y + 12
-	)
-end
+local OpenCorner = Instance.new("UICorner")
+OpenCorner.CornerRadius = UDim.new(0, 10)
+OpenCorner.Parent = OpenButton
 
-ContentLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(UpdateCanvas)
+local Sections = Instance.new("ScrollingFrame")
+Sections.Size = UDim2.new(1, -20, 1, -58)
+Sections.Position = UDim2.fromOffset(10, 50)
+Sections.BackgroundTransparency = 1
+Sections.BorderSizePixel = 0
+Sections.ScrollBarThickness = 3
+Sections.CanvasSize = UDim2.new()
+Sections.AutomaticCanvasSize = Enum.AutomaticSize.Y
+Sections.Parent = Main
 
-local function CreateSection(Name, Height)
+local SectionsLayout = Instance.new("UIListLayout")
+SectionsLayout.Padding = UDim.new(0, 8)
+SectionsLayout.SortOrder = Enum.SortOrder.LayoutOrder
+SectionsLayout.Parent = Sections
+
+local function CreateSection(Name, Order)
 	local Section = Instance.new("Frame")
 	Section.Name = Name
-	Section.Size = UDim2.new(1, -4, 0, Height)
-	Section.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
-	Section.LayoutOrder = #Content:GetChildren()
-	Section.Parent = Content
+	Section.Size = UDim2.new(1, -5, 0, 0)
+	Section.AutomaticSize = Enum.AutomaticSize.Y
+	Section.BackgroundColor3 = Color3.fromRGB(27, 27, 32)
+	Section.BorderSizePixel = 0
+	Section.LayoutOrder = Order
+	Section.Parent = Sections
 
-	CreateCorner(Section, 10)
-	CreateStroke(Section, Color3.fromRGB(45, 45, 55), 0, 1)
+	local Corner = Instance.new("UICorner")
+	Corner.CornerRadius = UDim.new(0, 9)
+	Corner.Parent = Section
 
-	local SectionTitle = Instance.new("TextLabel")
-	SectionTitle.Size = UDim2.new(1, -20, 0, 30)
-	SectionTitle.Position = UDim2.fromOffset(10, 4)
-	SectionTitle.BackgroundTransparency = 1
-	SectionTitle.Text = Name
-	SectionTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
-	SectionTitle.TextSize = 14
-	SectionTitle.Font = Enum.Font.GothamBold
-	SectionTitle.TextXAlignment = Enum.TextXAlignment.Left
-	SectionTitle.Parent = Section
+	local Padding = Instance.new("UIPadding")
+	Padding.PaddingTop = UDim.new(0, 8)
+	Padding.PaddingBottom = UDim.new(0, 8)
+	Padding.PaddingLeft = UDim.new(0, 10)
+	Padding.PaddingRight = UDim.new(0, 10)
+	Padding.Parent = Section
+
+	local Layout = Instance.new("UIListLayout")
+	Layout.Padding = UDim.new(0, 5)
+	Layout.SortOrder = Enum.SortOrder.LayoutOrder
+	Layout.Parent = Section
+
+	local Title = Instance.new("TextLabel")
+	Title.Size = UDim2.new(1, 0, 0, 27)
+	Title.BackgroundTransparency = 1
+	Title.Text = Name
+	Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+	Title.TextSize = 14
+	Title.Font = Enum.Font.GothamBold
+	Title.TextXAlignment = Enum.TextXAlignment.Left
+	Title.LayoutOrder = 0
+	Title.Parent = Section
 
 	return Section
 end
 
-local function CreateToggle(Parent, Text, Position, Default, Callback)
+local function CreateToggle(Parent, Name, Getter, Setter, Order)
 	local Button = Instance.new("TextButton")
-	Button.Size = UDim2.new(1, -20, 0, 32)
-	Button.Position = Position
-	Button.BackgroundColor3 = Color3.fromRGB(29, 29, 36)
-	Button.TextColor3 = Color3.fromRGB(235, 235, 235)
-	Button.TextSize = 13
+	Button.Size = UDim2.new(1, 0, 0, 32)
+	Button.BackgroundColor3 = Color3.fromRGB(35, 35, 41)
+	Button.BorderSizePixel = 0
+	Button.TextSize = 12
 	Button.Font = Enum.Font.GothamMedium
 	Button.TextXAlignment = Enum.TextXAlignment.Left
-	Button.Text = "  " .. Text .. ": " .. (Default and "ON" or "OFF")
+	Button.LayoutOrder = Order
 	Button.Parent = Parent
 
-	CreateCorner(Button, 7)
-
-	local State = Default
-
-	Button.Activated:Connect(function()
-		State = not State
-		Button.Text = "  " .. Text .. ": " .. (State and "ON" or "OFF")
-		Callback(State)
-	end)
-
-	return Button
-end
-
-local function CreateCycle(Parent, Text, Position, Values, Current, Callback)
-	local Button = Instance.new("TextButton")
-	Button.Size = UDim2.new(1, -20, 0, 32)
-	Button.Position = Position
-	Button.BackgroundColor3 = Color3.fromRGB(29, 29, 36)
-	Button.TextColor3 = Color3.fromRGB(235, 235, 235)
-	Button.TextSize = 13
-	Button.Font = Enum.Font.GothamMedium
-	Button.TextXAlignment = Enum.TextXAlignment.Left
-	Button.Parent = Parent
-
-	CreateCorner(Button, 7)
-
-	local Index = Current or 1
+	local Corner = Instance.new("UICorner")
+	Corner.CornerRadius = UDim.new(0, 7)
+	Corner.Parent = Button
 
 	local function Refresh()
-		Button.Text = "  " .. Text .. ": " .. Values[Index].Name
+		local State = Getter()
+		Button.Text = "  " .. Name .. "  [" .. (State and "ON" or "OFF") .. "]"
+		Button.TextColor3 = State
+			and Color3.fromRGB(120, 255, 150)
+			or Color3.fromRGB(180, 180, 180)
 	end
 
-	Refresh()
-
-	Button.Activated:Connect(function()
-		Index += 1
-
-		if Index > #Values then
-			Index = 1
-		end
-
-		Callback(Values[Index].Value)
+	Button.MouseButton1Click:Connect(function()
+		Setter(not Getter())
 		Refresh()
 	end)
 
+	Refresh()
+
 	return Button
 end
 
-local function CreateNumberBox(Parent, Text, Position, Default, Min, Max, Callback)
+local function CreateNumberBox(Parent, Name, Getter, Setter, Order)
 	local Box = Instance.new("TextBox")
-	Box.Size = UDim2.new(1, -20, 0, 32)
-	Box.Position = Position
-	Box.BackgroundColor3 = Color3.fromRGB(29, 29, 36)
-	Box.TextColor3 = Color3.fromRGB(235, 235, 235)
-	Box.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
-	Box.TextSize = 13
+	Box.Size = UDim2.new(1, 0, 0, 32)
+	Box.BackgroundColor3 = Color3.fromRGB(35, 35, 41)
+	Box.BorderSizePixel = 0
+	Box.TextSize = 12
 	Box.Font = Enum.Font.GothamMedium
+	Box.TextColor3 = Color3.new(1, 1, 1)
+	Box.PlaceholderColor3 = Color3.fromRGB(150, 150, 150)
 	Box.TextXAlignment = Enum.TextXAlignment.Left
-	Box.Text = "  " .. Text .. ": " .. tostring(Default)
 	Box.ClearTextOnFocus = false
+	Box.LayoutOrder = Order
+	Box.Text = "  " .. Name .. ": " .. tostring(Getter())
 	Box.Parent = Parent
 
-	CreateCorner(Box, 7)
+	local Corner = Instance.new("UICorner")
+	Corner.CornerRadius = UDim.new(0, 7)
+	Corner.Parent = Box
 
 	Box.FocusLost:Connect(function()
-		local Number = tonumber(Box.Text:gsub("^%s*"..Text..":%s*", ""))
+		local Value = tonumber(Box.Text:match(":%s*(%-?[%d%.]+)"))
 
-		if Number then
-			Number = math.clamp(Number, Min, Max)
-			Callback(Number)
-			Box.Text = "  " .. Text .. ": " .. tostring(Number)
-		else
-			Box.Text = "  " .. Text .. ": " .. tostring(Default)
+		if Value then
+			Setter(Value)
 		end
+
+		Box.Text = "  " .. Name .. ": " .. tostring(Getter())
 	end)
 
 	return Box
 end
 
-local TargetSection = CreateSection("Target Priority", 185)
+local FontList = {
+	Enum.Font.Gotham,
+	Enum.Font.GothamBold,
+	Enum.Font.GothamBlack,
+	Enum.Font.GothamMedium,
+	Enum.Font.GothamSemibold,
+	Enum.Font.SourceSans,
+	Enum.Font.SourceSansBold,
+	Enum.Font.SourceSansSemibold,
+	Enum.Font.SourceSansLight,
+	Enum.Font.Arial,
+	Enum.Font.ArialBold,
+	Enum.Font.Roboto,
+	Enum.Font.RobotoMono,
+	Enum.Font.RobotoCondensed,
+	Enum.Font.Ubuntu,
+	Enum.Font.FredokaOne
+}
+
+local FontIndex = 2
+
+local function CreateFontSelector(Parent, Order)
+	local Button = Instance.new("TextButton")
+	Button.Size = UDim2.new(1, 0, 0, 32)
+	Button.BackgroundColor3 = Color3.fromRGB(35, 35, 41)
+	Button.BorderSizePixel = 0
+	Button.TextColor3 = Color3.new(1, 1, 1)
+	Button.TextSize = 12
+	Button.Font = Enum.Font.GothamMedium
+	Button.TextXAlignment = Enum.TextXAlignment.Left
+	Button.LayoutOrder = Order
+	Button.Parent = Parent
+
+	local Corner = Instance.new("UICorner")
+	Corner.CornerRadius = UDim.new(0, 7)
+	Corner.Parent = Button
+
+	local function Refresh()
+		Button.Text = "  Fonte: " .. tostring(FontList[FontIndex]):gsub("Enum.Font.", "")
+	end
+
+	Button.MouseButton1Click:Connect(function()
+		FontIndex += 1
+
+		if FontIndex > #FontList then
+			FontIndex = 1
+		end
+
+		Config.Font = FontList[FontIndex]
+		Refresh()
+	end)
+
+	Refresh()
+end
+
+local PrioritySection = CreateSection("Prioridade do alvo", 1)
 
 CreateToggle(
-	TargetSection,
-	"Priorizar mais próximo",
-	UDim2.fromOffset(10, 38),
-	Config.PrioritizeNearest,
+	PrioritySection,
+	"Prioridade ativa",
+	function()
+		return Config.PriorityEnabled
+	end,
+	function(Value)
+		Config.PriorityEnabled = Value
+	end,
+	1
+)
+
+CreateToggle(
+	PrioritySection,
+	"Mais próximo",
+	function()
+		return Config.PrioritizeNearest
+	end,
 	function(Value)
 		Config.PrioritizeNearest = Value
-	end
+	end,
+	2
 )
 
 CreateToggle(
-	TargetSection,
+	PrioritySection,
 	"Priorizar inimigos",
-	UDim2.fromOffset(10, 76),
-	Config.PrioritizeEnemies,
+	function()
+		return Config.PrioritizeEnemies
+	end,
 	function(Value)
 		Config.PrioritizeEnemies = Value
-	end
+	end,
+	3
 )
 
 CreateToggle(
-	TargetSection,
-	"Filtro de prioridade",
-	UDim2.fromOffset(10, 114),
-	Config.TargetPriority,
+	PrioritySection,
+	"Somente dentro do raio",
+	function()
+		return Config.OnlyPriorityRange
+	end,
 	function(Value)
-		Config.TargetPriority = Value
-	end
+		Config.OnlyPriorityRange = Value
+	end,
+	4
 )
 
 CreateNumberBox(
-	TargetSection,
-	"Prioridade Studs",
-	UDim2.fromOffset(10, 152),
-	Config.PriorityStuds,
-	1,
-	500,
+	PrioritySection,
+	"Raio de prioridade (Studs)",
+	function()
+		return Config.PriorityStuds
+	end,
 	function(Value)
-		Config.PriorityStuds = Value
-	end
-)
-
-local VisualSection = CreateSection("Damage Visual", 300)
-
-CreateCycle(
-	VisualSection,
-	"Fonte",
-	UDim2.fromOffset(10, 38),
-	{
-		{Name = "GothamBold", Value = Enum.Font.GothamBold},
-		{Name = "GothamBlack", Value = Enum.Font.GothamBlack},
-		{Name = "GothamMedium", Value = Enum.Font.GothamMedium},
-		{Name = "SourceSansBold", Value = Enum.Font.SourceSansBold},
-		{Name = "SourceSans", Value = Enum.Font.SourceSans},
-		{Name = "Arcade", Value = Enum.Font.Arcade},
-		{Name = "Code", Value = Enum.Font.Code},
-		{Name = "Fantasy", Value = Enum.Font.Fantasy},
-		{Name = "Antique", Value = Enum.Font.Antique},
-		{Name = "SciFi", Value = Enum.Font.SciFi},
-		{Name = "Highway", Value = Enum.Font.Highway},
-		{Name = "Bodoni", Value = Enum.Font.Bodoni},
-		{Name = "Cartoon", Value = Enum.Font.Cartoon}
-	},
-	1,
-	function(Value)
-		Config.Font = Value
-	end
+		Config.PriorityStuds = math.max(1, Value)
+	end,
+	5
 )
 
 CreateNumberBox(
-	VisualSection,
-	"Tamanho",
-	UDim2.fromOffset(10, 76),
-	Config.TextSize,
-	8,
-	80,
+	PrioritySection,
+	"Distância máxima",
+	function()
+		return Config.MaxDistance
+	end,
 	function(Value)
-		Config.TextSize = Value
-	end
+		Config.MaxDistance = math.max(1, Value)
+	end,
+	6
+)
+
+local DamageSection = CreateSection("Damage Indicator", 2)
+
+CreateToggle(
+	DamageSection,
+	"Mostrar dano",
+	function()
+		return Config.DamageEnabled
+	end,
+	function(Value)
+		Config.DamageEnabled = Value
+	end,
+	1
 )
 
 CreateNumberBox(
-	VisualSection,
-	"Borda",
-	UDim2.fromOffset(10, 114),
-	Config.StrokeTransparency,
-	0,
-	1,
+	DamageSection,
+	"Delay do dano",
+	function()
+		return Config.DamageDelay
+	end,
 	function(Value)
-		Config.StrokeTransparency = Value
-	end
+		Config.DamageDelay = math.max(0, Value)
+	end,
+	2
 )
 
 CreateNumberBox(
-	VisualSection,
-	"Espessura",
-	UDim2.fromOffset(10, 152),
-	Config.StrokeThickness,
-	0,
-	10,
+	DamageSection,
+	"Duração",
+	function()
+		return Config.DamageDuration
+	end,
 	function(Value)
-		Config.StrokeThickness = Value
-	end
+		Config.DamageDuration = math.max(0.05, Value)
+	end,
+	3
+)
+
+CreateNumberBox(
+	DamageSection,
+	"Altura",
+	function()
+		return Config.DamageRise
+	end,
+	function(Value)
+		Config.DamageRise = math.max(0, Value)
+	end,
+	4
+)
+
+CreateNumberBox(
+	DamageSection,
+	"Tamanho do texto",
+	function()
+		return Config.TextSize
+	end,
+	function(Value)
+		Config.TextSize = math.max(8, Value)
+	end,
+	5
 )
 
 CreateToggle(
-	VisualSection,
+	DamageSection,
 	"Borda",
-	UDim2.fromOffset(10, 190),
-	Config.StrokeEnabled,
+	function()
+		return Config.StrokeEnabled
+	end,
 	function(Value)
 		Config.StrokeEnabled = Value
-	end
+	end,
+	6
 )
 
 CreateNumberBox(
-	VisualSection,
-	"Subida",
-	UDim2.fromOffset(10, 228),
-	Config.RiseHeight,
-	0,
-	10,
+	DamageSection,
+	"Transparência da borda",
+	function()
+		return Config.StrokeTransparency
+	end,
 	function(Value)
-		Config.RiseHeight = Value
-	end
+		Config.StrokeTransparency = math.clamp(Value, 0, 1)
+	end,
+	7
 )
 
 CreateNumberBox(
-	VisualSection,
-	"Aleatoriedade",
-	UDim2.fromOffset(10, 266),
-	Config.RandomOffset,
-	0,
-	5,
+	DamageSection,
+	"Espessura da borda",
+	function()
+		return Config.StrokeThickness
+	end,
 	function(Value)
-		Config.RandomOffset = Value
-	end
+		Config.StrokeThickness = math.max(0, Value)
+	end,
+	8
 )
-
-local MouseSection = CreateSection("Mouse / FPS", 185)
 
 CreateToggle(
-	MouseSection,
-	"Dano no mouse",
-	UDim2.fromOffset(10, 38),
-	Config.MouseDamage,
+	DamageSection,
+	"Posição aleatória",
+	function()
+		return Config.RandomPosition
+	end,
+	function(Value)
+		Config.RandomPosition = Value
+	end,
+	9
+)
+
+CreateToggle(
+	DamageSection,
+	"Atravessar paredes",
+	function()
+		return Config.ThroughWalls
+	end,
+	function(Value)
+		Config.ThroughWalls = Value
+	end,
+	10
+)
+
+CreateNumberBox(
+	DamageSection,
+	"Random X",
+	function()
+		return Config.RandomX
+	end,
+	function(Value)
+		Config.RandomX = math.max(0, Value)
+	end,
+	11
+)
+
+CreateNumberBox(
+	DamageSection,
+	"Random Y",
+	function()
+		return Config.RandomY
+	end,
+	function(Value)
+		Config.RandomY = math.max(0, Value)
+	end,
+	12
+)
+
+CreateNumberBox(
+	DamageSection,
+	"Random Z",
+	function()
+		return Config.RandomZ
+	end,
+	function(Value)
+		Config.RandomZ = math.max(0, Value)
+	end,
+	13
+)
+
+CreateFontSelector(DamageSection, 14)
+
+local DeathSection = CreateSection("Death Indicator", 3)
+
+CreateToggle(
+	DeathSection,
+	"Mostrar Dead",
+	function()
+		return Config.DeathEnabled
+	end,
+	function(Value)
+		Config.DeathEnabled = Value
+	end,
+	1
+)
+
+CreateNumberBox(
+	DeathSection,
+	"Duração do Dead",
+	function()
+		return Config.DeathDuration
+	end,
+	function(Value)
+		Config.DeathDuration = math.max(0.05, Value)
+	end,
+	2
+)
+
+CreateNumberBox(
+	DeathSection,
+	"Altura do Dead",
+	function()
+		return Config.DeathRise
+	end,
+	function(Value)
+		Config.DeathRise = math.max(0, Value)
+	end,
+	3
+)
+
+CreateNumberBox(
+	DeathSection,
+	"Tamanho do Dead",
+	function()
+		return Config.DeathTextSize
+	end,
+	function(Value)
+		Config.DeathTextSize = math.max(8, Value)
+	end,
+	4
+)
+
+local PerformanceSection = CreateSection("FPS / MS / Mouse", 4)
+
+CreateToggle(
+	PerformanceSection,
+	"Damage no mouse",
+	function()
+		return Config.MouseDamage
+	end,
 	function(Value)
 		Config.MouseDamage = Value
-	end
+	end,
+	1
 )
 
 CreateToggle(
-	MouseSection,
-	"FPS seguindo mouse",
-	UDim2.fromOffset(10, 76),
-	Config.ShowFPS,
+	PerformanceSection,
+	"Mostrar FPS",
+	function()
+		return Config.ShowFPS
+	end,
 	function(Value)
 		Config.ShowFPS = Value
-	end
+	end,
+	2
 )
 
-CreateNumberBox(
-	MouseSection,
-	"Mouse X",
-	UDim2.fromOffset(10, 114),
-	Config.MouseOffsetX,
-	-200,
-	200,
+CreateToggle(
+	PerformanceSection,
+	"Mostrar MS",
+	function()
+		return Config.ShowMS
+	end,
 	function(Value)
-		Config.MouseOffsetX = Value
-	end
+		Config.ShowMS = Value
+	end,
+	3
 )
 
-CreateNumberBox(
-	MouseSection,
-	"Mouse Y",
-	UDim2.fromOffset(10, 152),
-	Config.MouseOffsetY,
-	-200,
-	200,
-	function(Value)
-		Config.MouseOffsetY = Value
-	end
-)
-
-local FPSLabel = Instance.new("TextLabel")
-FPSLabel.Name = "FPS"
-FPSLabel.Size = UDim2.fromOffset(80, 25)
-FPSLabel.BackgroundTransparency = 1
-FPSLabel.Text = "FPS: 0"
-FPSLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-FPSLabel.TextSize = 14
-FPSLabel.Font = Enum.Font.GothamBold
-FPSLabel.Visible = false
-FPSLabel.Parent = ScreenGui
-
-local FPSStroke = Instance.new("UIStroke")
-FPSStroke.Color = Color3.fromRGB(0, 0, 0)
-FPSStroke.Thickness = 2
-FPSStroke.Parent = FPSLabel
-
-MakeDraggable(Window, Header)
-
-ConfigButton.Activated:Connect(function()
-	Window.Visible = not Window.Visible
-end)
-
-Close.Activated:Connect(function()
-	Window.Visible = false
-end)
-
-local function GetRoot(Character)
-	return Character:FindFirstChild("HumanoidRootPart")
-		or Character:FindFirstChild("UpperTorso")
-		or Character:FindFirstChild("Torso")
-end
-
-local function IsAlive(Character)
-	local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
-	return Humanoid and Humanoid.Health > 0
-end
+local PerformanceLabel = Instance.new("TextLabel")
+PerformanceLabel.Size = UDim2.fromOffset(150, 30)
+PerformanceLabel.BackgroundTransparency = 1
+PerformanceLabel.TextColor3 = Color3.new(1, 1, 1)
+PerformanceLabel.TextSize = 13
+PerformanceLabel.Font = Enum.Font.GothamBold
+PerformanceLabel.TextXAlignment = Enum.TextXAlignment.Left
+PerformanceLabel.Visible = false
+PerformanceLabel.Parent = ScreenGui
 
 local function IsEnemy(Player)
+	if not Player then
+		return false
+	end
+
 	if not LocalPlayer.Team or not Player.Team then
 		return true
 	end
@@ -536,296 +644,504 @@ local function IsEnemy(Player)
 	return Player.Team ~= LocalPlayer.Team
 end
 
-local function GetNearestTarget()
-	local MyCharacter = LocalPlayer.Character
-	local MyRoot = MyCharacter and GetRoot(MyCharacter)
+local function GetRoot(Player)
+	local Character = Player.Character
 
-	if not MyRoot then
+	if not Character then
 		return nil
 	end
 
-	local BestPlayer
-	local BestDistance = math.huge
-	local EnemyBest
-	local EnemyDistance = math.huge
+	return Character:FindFirstChild("HumanoidRootPart")
+end
+
+local function GetHumanoid(Player)
+	local Character = Player.Character
+
+	if not Character then
+		return nil
+	end
+
+	return Character:FindFirstChildOfClass("Humanoid")
+end
+
+local function GetNearestTarget()
+	local Character = LocalPlayer.Character
+
+	if not Character then
+		return nil
+	end
+
+	local LocalRoot = Character:FindFirstChild("HumanoidRootPart")
+
+	if not LocalRoot then
+		return nil
+	end
+
+	local PriorityCandidates = {}
+	local EnemyCandidates = {}
+	local NormalCandidates = {}
 
 	for _, Player in ipairs(Players:GetPlayers()) do
-		if Player ~= LocalPlayer and Player.Character and IsAlive(Player.Character) then
-			local Root = GetRoot(Player.Character)
+		if Player ~= LocalPlayer then
+			local Root = GetRoot(Player)
+			local Humanoid = GetHumanoid(Player)
 
-			if Root then
-				local Distance = (Root.Position - MyRoot.Position).Magnitude
+			if Root and Humanoid and Humanoid.Health > 0 then
+				local Distance = (Root.Position - LocalRoot.Position).Magnitude
 
 				if Distance <= Config.MaxDistance then
-					if Distance < BestDistance then
-						BestDistance = Distance
-						BestPlayer = Player
-					end
+					local Candidate = {
+						Player = Player,
+						Root = Root,
+						Distance = Distance,
+						Enemy = IsEnemy(Player)
+					}
 
-					if Config.PrioritizeEnemies and IsEnemy(Player) and Distance < EnemyDistance then
-						EnemyDistance = Distance
-						EnemyBest = Player
+					if Config.PriorityEnabled and Distance <= Config.PriorityStuds then
+						table.insert(PriorityCandidates, Candidate)
+					elseif not Config.OnlyPriorityRange then
+						if Candidate.Enemy then
+							table.insert(EnemyCandidates, Candidate)
+						else
+							table.insert(NormalCandidates, Candidate)
+						end
 					end
 				end
 			end
 		end
 	end
 
-	if Config.PrioritizeEnemies and EnemyBest then
-		if not Config.TargetPriority or EnemyDistance <= Config.PriorityStuds then
-			return EnemyBest
-		end
+	local function SortByDistance(List)
+		table.sort(List, function(A, B)
+			return A.Distance < B.Distance
+		end)
+
+		return List
 	end
 
-	if Config.PrioritizeNearest then
-		if not Config.TargetPriority then
-			return BestPlayer
+	if Config.PriorityEnabled and #PriorityCandidates > 0 then
+		if Config.PrioritizeEnemies then
+			local PriorityEnemies = {}
+
+			for _, Candidate in ipairs(PriorityCandidates) do
+				if Candidate.Enemy then
+					table.insert(PriorityEnemies, Candidate)
+				end
+			end
+
+			if #PriorityEnemies > 0 then
+				return SortByDistance(PriorityEnemies)[1].Player
+			end
 		end
 
-		if BestPlayer and BestDistance <= Config.PriorityStuds then
-			return BestPlayer
-		end
+		return SortByDistance(PriorityCandidates)[1].Player
 	end
 
-	return BestPlayer
+	if Config.OnlyPriorityRange then
+		return nil
+	end
+
+	if Config.PrioritizeEnemies and #EnemyCandidates > 0 then
+		return SortByDistance(EnemyCandidates)[1].Player
+	end
+
+	if #NormalCandidates > 0 then
+		return SortByDistance(NormalCandidates)[1].Player
+	end
+
+	return nil
 end
 
-local function CreateMouseDamage(Damage)
-	if not Config.MouseDamage then
+local function CreateIndicator(Player, Amount)
+	if not Config.DamageEnabled then
 		return
 	end
 
-	local Position = UserInputService:GetMouseLocation()
-
-	local Label = Instance.new("TextLabel")
-	Label.Size = UDim2.fromOffset(110, 40)
-	Label.Position = UDim2.fromOffset(
-		Position.X + Config.MouseOffsetX,
-		Position.Y + Config.MouseOffsetY
-	)
-	Label.BackgroundTransparency = 1
-	Label.Text = "-" .. tostring(math.floor(Damage))
-	Label.TextColor3 = Config.TextColor
-	Label.TextSize = Config.TextSize
-	Label.Font = Config.Font
-	Label.TextTransparency = 0
-	Label.TextStrokeColor3 = Config.StrokeColor
-	Label.TextStrokeTransparency = Config.StrokeEnabled and Config.StrokeTransparency or 1
-	Label.Parent = ScreenGui
-
-	local Move = TweenService:Create(
-		Label,
-		TweenInfo.new(
-			Config.Duration,
-			Enum.EasingStyle.Quad,
-			Enum.EasingDirection.Out
-		),
-		{
-			Position = Label.Position + UDim2.fromOffset(
-				math.random(-20, 20),
-				-Config.RiseHeight * 15
-			),
-			TextTransparency = 1,
-			TextStrokeTransparency = 1
-		}
-	)
-
-	Move:Play()
-
-	Move.Completed:Once(function()
-		Label:Destroy()
-	end)
-end
-
-local function CreateDamage(Character, Damage)
-	if not Config.Enabled or Damage <= 0 then
-		return
-	end
-
-	local Root = GetRoot(Character)
+	local Root = GetRoot(Player)
 
 	if not Root then
 		return
 	end
 
-	local MyCharacter = LocalPlayer.Character
-	local MyRoot = MyCharacter and GetRoot(MyCharacter)
+	local Billboard = Instance.new("BillboardGui")
+	Billboard.Name = "Damage_" .. Player.UserId
+	Billboard.Adornee = Root
+	Billboard.AlwaysOnTop = Config.ThroughWalls
+	Billboard.Size = UDim2.fromOffset(150, 60)
+	Billboard.StudsOffset = Vector3.new(
+		Config.RandomPosition and math.random(-100, 100) / 100 * Config.RandomX or 0,
+		Config.RandomPosition and math.random(-100, 100) / 100 * Config.RandomY + 2 or 2,
+		Config.RandomPosition and math.random(-100, 100) / 100 * Config.RandomZ or 0
+	)
+	Billboard.Parent = ScreenGui
 
-	if MyRoot then
-		if (Root.Position - MyRoot.Position).Magnitude > Config.MaxDistance then
+	local Label = Instance.new("TextLabel")
+	Label.Size = UDim2.fromScale(1, 1)
+	Label.BackgroundTransparency = 1
+	Label.Text = "-" .. tostring(Amount)
+	Label.TextColor3 = Config.TextColor
+	Label.TextTransparency = Config.TextTransparency
+	Label.TextSize = Config.TextSize
+	Label.Font = Config.Font
+	Label.TextStrokeTransparency = Config.StrokeEnabled and Config.StrokeTransparency or 1
+	Label.TextStrokeColor3 = Config.StrokeColor
+	Label.TextStrokeTransparency = Config.StrokeEnabled and Config.StrokeTransparency or 1
+	Label.Parent = Billboard
+
+	local StartOffset = Billboard.StudsOffset
+
+	task.delay(Config.DamageDelay, function()
+		if not Billboard.Parent then
 			return
 		end
-	end
 
-	task.delay(Config.Delay, function()
-		if not Character.Parent or not Root.Parent then
-			return
-		end
-
-		local Billboard = Instance.new("BillboardGui")
-		Billboard.Name = "DamageNumber"
-		Billboard.Adornee = Root
-		Billboard.Size = UDim2.fromOffset(120, 45)
-		Billboard.StudsOffset = Vector3.new(
-			math.random(-100, 100) / 100 * Config.RandomOffset,
-			2.5 + math.random(-100, 100) / 100 * Config.RandomOffset,
-			math.random(-100, 100) / 100 * Config.RandomOffset
+		local Info = TweenInfo.new(
+			Config.DamageDuration,
+			Enum.EasingStyle.Quad,
+			Enum.EasingDirection.Out
 		)
-		Billboard.AlwaysOnTop = true
-		Billboard.LightInfluence = 0
-		Billboard.MaxDistance = Config.MaxDistance
-		Billboard.Parent = ScreenGui
 
-		local Text = Instance.new("TextLabel")
-		Text.Size = UDim2.fromScale(1, 1)
-		Text.BackgroundTransparency = 1
-		Text.Text = "-" .. tostring(math.floor(Damage))
-		Text.TextColor3 = Config.TextColor
-		Text.TextSize = Config.TextSize
-		Text.Font = Config.Font
-		Text.TextTransparency = 0
-		Text.TextStrokeColor3 = Config.StrokeColor
-		Text.TextStrokeTransparency = Config.StrokeEnabled and Config.StrokeTransparency or 1
-		Text.Parent = Billboard
-
-		local StartOffset = Billboard.StudsOffset
-
-		local MoveTween = TweenService:Create(
+		local Tween = TweenService:Create(
 			Billboard,
-			TweenInfo.new(
-				Config.Duration,
-				Enum.EasingStyle.Quad,
-				Enum.EasingDirection.Out
-			),
+			Info,
 			{
-				StudsOffset = StartOffset + Vector3.new(
-					math.random(-30, 30) / 100,
-					Config.RiseHeight,
-					math.random(-30, 30) / 100
-				)
+				StudsOffset = StartOffset + Vector3.new(0, Config.DamageRise, 0)
 			}
 		)
 
-		local FadeTween = TweenService:Create(
-			Text,
-			TweenInfo.new(
-				Config.Duration,
-				Enum.EasingStyle.Quad,
-				Enum.EasingDirection.Out
-			),
+		local TextTween = TweenService:Create(
+			Label,
+			Info,
 			{
 				TextTransparency = 1,
 				TextStrokeTransparency = 1
 			}
 		)
 
-		MoveTween:Play()
-		FadeTween:Play()
+		Tween:Play()
+		TextTween:Play()
 
-		FadeTween.Completed:Once(function()
+		Tween.Completed:Once(function()
 			Billboard:Destroy()
 		end)
 	end)
-
-	CreateMouseDamage(Damage)
 end
 
-local function TrackCharacter(Player, Character)
-	if Player == LocalPlayer then
+local function CreateMouseDamage(Amount)
+	if not Config.MouseDamage then
 		return
 	end
 
-	local Humanoid = Character:FindFirstChildOfClass("Humanoid")
-		or Character:WaitForChild("Humanoid", 5)
+	local Label = Instance.new("TextLabel")
+	Label.Name = "MouseDamage"
+	Label.Size = UDim2.fromOffset(120, 45)
+	Label.BackgroundTransparency = 1
+	Label.Text = "-" .. tostring(Amount)
+	Label.TextColor3 = Config.TextColor
+	Label.TextSize = Config.TextSize
+	Label.Font = Config.Font
+	Label.TextStrokeColor3 = Config.StrokeColor
+	Label.TextStrokeTransparency = Config.StrokeEnabled and Config.StrokeTransparency or 1
+	Label.Position = UDim2.fromOffset(
+		MousePosition.X + Config.MouseOffsetX,
+		MousePosition.Y + Config.MouseOffsetY
+	)
+	Label.Parent = ScreenGui
 
-	if not Humanoid then
-		return
-	end
+	local StartPosition = Label.Position
 
-	if Tracked[Character] then
-		return
-	end
+	local Tween = TweenService:Create(
+		Label,
+		TweenInfo.new(Config.DamageDuration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{
+			Position = UDim2.fromOffset(
+				StartPosition.X,
+				StartPosition.Y - 35
+			),
+			TextTransparency = 1,
+			TextStrokeTransparency = 1
+		}
+	)
 
-	Tracked[Character] = true
+	Tween:Play()
 
-	local LastHealth = Humanoid.Health
-
-	local Connection = Humanoid.HealthChanged:Connect(function(NewHealth)
-		if NewHealth < LastHealth then
-			CreateDamage(Character, LastHealth - NewHealth)
-		end
-
-		LastHealth = NewHealth
+	Tween.Completed:Once(function()
+		Label:Destroy()
 	end)
+end
 
-	Connections[#Connections + 1] = Connection
+local function CreateDeathIndicator(Player)
+	if not Config.DeathEnabled then
+		return
+	end
 
-	Character.Destroying:Once(function()
-		Tracked[Character] = nil
+	local Root = GetRoot(Player)
 
-		if Connection then
-			Connection:Disconnect()
-		end
+	if not Root then
+		return
+	end
+
+	local Billboard = Instance.new("BillboardGui")
+	Billboard.Name = "DeathIndicator"
+	Billboard.Adornee = Root
+	Billboard.AlwaysOnTop = Config.ThroughWalls
+	Billboard.Size = UDim2.fromOffset(160, 60)
+	Billboard.StudsOffset = Vector3.new(0, 2, 0)
+	Billboard.Parent = ScreenGui
+
+	local Label = Instance.new("TextLabel")
+	Label.Size = UDim2.fromScale(1, 1)
+	Label.BackgroundTransparency = 1
+	Label.Text = Config.DeathText
+	Label.TextColor3 = Config.DeathTextColor
+	Label.TextSize = Config.DeathTextSize
+	Label.Font = Enum.Font.GothamBlack
+	Label.TextStrokeColor3 = Config.DeathStrokeColor
+	Label.TextStrokeTransparency = Config.DeathStrokeEnabled
+		and Config.DeathStrokeTransparency
+		or 1
+	Label.Parent = Billboard
+
+	local TweenInfoData = TweenInfo.new(
+		Config.DeathDuration,
+		Enum.EasingStyle.Quad,
+		Enum.EasingDirection.Out
+	)
+
+	local PositionTween = TweenService:Create(
+		Billboard,
+		TweenInfoData,
+		{
+			StudsOffset = Vector3.new(0, 2 + Config.DeathRise, 0)
+		}
+	)
+
+	local TextTween = TweenService:Create(
+		Label,
+		TweenInfoData,
+		{
+			TextTransparency = 1,
+			TextStrokeTransparency = 1
+		}
+	)
+
+	PositionTween:Play()
+	TextTween:Play()
+
+	PositionTween.Completed:Once(function()
+		Billboard:Destroy()
 	end)
 end
 
 local function TrackPlayer(Player)
-	if Player == LocalPlayer then
+	if Player == LocalPlayer or Tracked[Player] then
 		return
 	end
 
-	if Player.Character then
-		task.spawn(TrackCharacter, Player, Player.Character)
+	Tracked[Player] = true
+
+	local function TrackCharacter(Character)
+		local Humanoid = Character:WaitForChild("Humanoid", 5)
+
+		if not Humanoid then
+			return
+		end
+
+		local LastHealth = Humanoid.Health
+		local DeadShown = false
+
+		local HealthConnection = Humanoid.HealthChanged:Connect(function(NewHealth)
+			if NewHealth < LastHealth then
+				local Damage = LastHealth - NewHealth
+
+				if Damage > 0 then
+					local Root = GetRoot(Player)
+
+					if Root and LocalPlayer.Character then
+						local LocalRoot = GetRoot(LocalPlayer)
+
+						if LocalRoot then
+							local Distance = (Root.Position - LocalRoot.Position).Magnitude
+
+							local Allowed = true
+
+							if Config.PriorityEnabled and Config.OnlyPriorityRange then
+								Allowed = Distance <= Config.PriorityStuds
+							else
+								Allowed = Distance <= Config.MaxDistance
+							end
+
+							if Allowed then
+								CreateIndicator(Player, Damage)
+
+								if CurrentTarget == Player then
+									CreateMouseDamage(Damage)
+								end
+							end
+						end
+					end
+				end
+			end
+
+			if NewHealth <= 0 and not DeadShown then
+				DeadShown = true
+				CreateDeathIndicator(Player)
+			end
+
+			LastHealth = NewHealth
+		end)
+
+		table.insert(Connections, HealthConnection)
 	end
 
-	Connections[#Connections + 1] = Player.CharacterAdded:Connect(function(Character)
-		task.wait(0.1)
-		TrackCharacter(Player, Character)
-	end)
+	if Player.Character then
+		task.spawn(TrackCharacter, Player.Character)
+	end
+
+	table.insert(
+		Connections,
+		Player.CharacterAdded:Connect(function(Character)
+			task.spawn(TrackCharacter, Character)
+		end)
+	)
 end
 
 for _, Player in ipairs(Players:GetPlayers()) do
 	TrackPlayer(Player)
 end
 
-Connections[#Connections + 1] = Players.PlayerAdded:Connect(TrackPlayer)
+table.insert(
+	Connections,
+	Players.PlayerAdded:Connect(TrackPlayer)
+)
 
-local TargetTimer = 0
+local LastTargetUpdate = 0
 
-Connections[#Connections + 1] = RunService.Heartbeat:Connect(function(Delta)
-	FrameCounter += 1
-	TargetTimer += Delta
+table.insert(
+	Connections,
+	RunService.Heartbeat:Connect(function()
+		local Now = os.clock()
 
-	if TargetTimer >= Config.UpdateRate then
-		TargetTimer = 0
-		LastTarget = GetNearestTarget()
+		if Now - LastTargetUpdate >= Config.UpdateRate then
+			LastTargetUpdate = Now
+			CurrentTarget = GetNearestTarget()
+		end
+	end)
+)
+
+local FPS = 0
+local Frames = 0
+local LastFPSUpdate = os.clock()
+
+table.insert(
+	Connections,
+	RunService.RenderStepped:Connect(function()
+		Frames += 1
+
+		local Now = os.clock()
+
+		if Now - LastFPSUpdate >= 1 then
+			FPS = Frames
+			Frames = 0
+			LastFPSUpdate = Now
+		end
+
+		if Config.ShowFPS or Config.ShowMS then
+			PerformanceLabel.Visible = true
+
+			local Parts = {}
+
+			if Config.ShowFPS then
+				table.insert(Parts, "FPS: " .. tostring(FPS))
+			end
+
+			if Config.ShowMS then
+				local Ping = Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
+				table.insert(Parts, "Ms: " .. tostring(math.floor(Ping)))
+			end
+
+			PerformanceLabel.Text = table.concat(Parts, " | ")
+
+			PerformanceLabel.Position = UDim2.fromOffset(
+				MousePosition.X + Config.PerformanceOffsetX,
+				MousePosition.Y + Config.PerformanceOffsetY
+			)
+		else
+			PerformanceLabel.Visible = false
+		end
+	end)
+)
+
+table.insert(
+	Connections,
+	UserInputService.InputChanged:Connect(function(Input)
+		if Input.UserInputType == Enum.UserInputType.MouseMovement then
+			MousePosition = UserInputService:GetMouseLocation()
+		elseif Input.UserInputType == Enum.UserInputType.Touch then
+			LastTouchPosition = Input.Position
+			MousePosition = LastTouchPosition
+		end
+	end)
+)
+
+MousePosition = UserInputService:GetMouseLocation()
+
+local Dragging = false
+local DragStart
+local StartPosition
+
+Header.InputBegan:Connect(function(Input)
+	if Input.UserInputType == Enum.UserInputType.MouseButton1
+		or Input.UserInputType == Enum.UserInputType.Touch then
+
+		Dragging = true
+		DragStart = Input.Position
+		StartPosition = Main.Position
 	end
+end)
 
-	if Config.ShowFPS then
-		FPSLabel.Visible = true
+Header.InputEnded:Connect(function(Input)
+	if Input.UserInputType == Enum.UserInputType.MouseButton1
+		or Input.UserInputType == Enum.UserInputType.Touch then
 
-		local MousePosition = UserInputService:GetMouseLocation()
+		Dragging = false
+	end
+end)
 
-		FPSLabel.Position = UDim2.fromOffset(
-			MousePosition.X + Config.FPSOffsetX,
-			MousePosition.Y + Config.FPSOffsetY
+table.insert(
+	Connections,
+	UserInputService.InputChanged:Connect(function(Input)
+		if not Dragging then
+			return
+		end
+
+		if Input.UserInputType ~= Enum.UserInputType.MouseMovement
+			and Input.UserInputType ~= Enum.UserInputType.Touch then
+			return
+		end
+
+		local Delta = Input.Position - DragStart
+
+		Main.Position = UDim2.new(
+			StartPosition.X.Scale,
+			StartPosition.X.Offset + Delta.X,
+			StartPosition.Y.Scale,
+			StartPosition.Y.Offset + Delta.Y
 		)
-	else
-		FPSLabel.Visible = false
-	end
+	end)
+)
+
+Close.MouseButton1Click:Connect(function()
+	Main.Visible = false
+	OpenButton.Visible = true
 end)
 
-Connections[#Connections + 1] = RunService.RenderStepped:Connect(function()
-	if os.clock() - LastFPSTime >= 0.5 then
-		FPS = math.floor(FrameCounter / (os.clock() - LastFPSTime))
-		FrameCounter = 0
-		LastFPSTime = os.clock()
-
-		FPSLabel.Text = "FPS: " .. tostring(FPS)
-	end
+OpenButton.MouseButton1Click:Connect(function()
+	Main.Visible = true
+	OpenButton.Visible = false
 end)
 
-ScreenGui.Destroying:Connect(function()
+local function Cleanup()
 	for _, Connection in ipairs(Connections) do
 		if Connection then
 			Connection:Disconnect()
@@ -834,4 +1150,10 @@ ScreenGui.Destroying:Connect(function()
 
 	table.clear(Connections)
 	table.clear(Tracked)
-end)
+
+	if ScreenGui then
+		ScreenGui:Destroy()
+	end
+end
+
+script.Destroying:Connect(Cleanup)

@@ -13,9 +13,9 @@ local Config = {
 	PriorityStuds = 19,
 	PrioritizeNearest = true,
 	PrioritizeEnemies = true,
-
 	OnlyPriorityRange = true,
 	MaxDistance = 250,
+	UpdateRate = 0.025,
 
 	DamageEnabled = true,
 	DamageDelay = 0.05,
@@ -40,13 +40,23 @@ local Config = {
 	ThroughWalls = false,
 
 	MouseDamage = false,
-	MouseOffsetX = 22,
-	MouseOffsetY = 0,
+	MouseDamageOffsetX = 22,
+	MouseDamageOffsetY = 0,
 
 	ShowFPS = false,
 	ShowMS = false,
 	PerformanceOffsetX = 22,
 	PerformanceOffsetY = 20,
+
+	TracePlayer = false,
+	TracePlayerMouse = false,
+	TraceMouseDeadRed = true,
+	TraceLength = 8,
+	TraceThickness = 1.5,
+
+	HealthPlayers = false,
+	HealthTextSize = 16,
+	HealthMaxDistance = 250,
 
 	DeathEnabled = true,
 	DeathText = "Dead",
@@ -56,17 +66,28 @@ local Config = {
 	DeathTextColor = Color3.fromRGB(35, 35, 35),
 	DeathStrokeEnabled = true,
 	DeathStrokeColor = Color3.fromRGB(220, 220, 220),
-	DeathStrokeTransparency = 0.25,
-
-	UpdateRate = 0.025
+	DeathStrokeTransparency = 0.25
 }
 
 local Connections = {}
 local Tracked = {}
-local CurrentTarget = nil
+local HealthLabels = {}
+local PlayerTraces = {}
 
-local LastTouchPosition = Vector2.new(400, 300)
-local MousePosition = Vector2.new(0, 0)
+local CurrentTarget = nil
+local MouseTrace = nil
+
+local MousePosition = UserInputService:GetMouseLocation()
+local LastTouchPosition = MousePosition
+
+local FPS = 0
+local Frames = 0
+local LastFPSUpdate = os.clock()
+local LastTargetUpdate = 0
+
+local DrawingAvailable =
+	typeof(Drawing) == "table"
+	and typeof(Drawing.new) == "function"
 
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "DamageIndicator"
@@ -75,11 +96,11 @@ ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
 local Main = Instance.new("Frame")
-Main.Size = UDim2.fromOffset(330, 460)
-Main.Position = UDim2.new(0.5, -165, 0.5, -230)
+Main.Name = "Main"
+Main.Size = UDim2.fromOffset(330, 520)
+Main.Position = UDim2.new(0.5, -165, 0.5, -260)
 Main.BackgroundColor3 = Color3.fromRGB(20, 20, 24)
 Main.BorderSizePixel = 0
-Main.Visible = true
 Main.Parent = ScreenGui
 
 local MainCorner = Instance.new("UICorner")
@@ -87,7 +108,7 @@ MainCorner.CornerRadius = UDim.new(0, 12)
 MainCorner.Parent = Main
 
 local Header = Instance.new("TextLabel")
-Header.Size = UDim2.new(1, -50, 0, 45)
+Header.Size = UDim2.new(1, -55, 0, 45)
 Header.Position = UDim2.fromOffset(15, 0)
 Header.BackgroundTransparency = 1
 Header.Text = "Damage Indicator"
@@ -170,7 +191,7 @@ local function CreateSection(Name, Order)
 	Title.Size = UDim2.new(1, 0, 0, 27)
 	Title.BackgroundTransparency = 1
 	Title.Text = Name
-	Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+	Title.TextColor3 = Color3.new(1, 1, 1)
 	Title.TextSize = 14
 	Title.Font = Enum.Font.GothamBold
 	Title.TextXAlignment = Enum.TextXAlignment.Left
@@ -197,8 +218,16 @@ local function CreateToggle(Parent, Name, Getter, Setter, Order)
 
 	local function Refresh()
 		local State = Getter()
-		Button.Text = "  " .. Name .. "  [" .. (State and "ON" or "OFF") .. "]"
-		Button.TextColor3 = State
+
+		Button.Text =
+			"  "
+			.. Name
+			.. "  ["
+			.. (State and "ON" or "OFF")
+			.. "]"
+
+		Button.TextColor3 =
+			State
 			and Color3.fromRGB(120, 255, 150)
 			or Color3.fromRGB(180, 180, 180)
 	end
@@ -233,13 +262,19 @@ local function CreateNumberBox(Parent, Name, Getter, Setter, Order)
 	Corner.Parent = Box
 
 	Box.FocusLost:Connect(function()
-		local Value = tonumber(Box.Text:match(":%s*(%-?[%d%.]+)"))
+		local Value = tonumber(
+			Box.Text:match(":%s*([%-]?[%d%.]+)")
+		)
 
 		if Value then
 			Setter(Value)
 		end
 
-		Box.Text = "  " .. Name .. ": " .. tostring(Getter())
+		Box.Text =
+			"  "
+			.. Name
+			.. ": "
+			.. tostring(Getter())
 	end)
 
 	return Box
@@ -283,7 +318,9 @@ local function CreateFontSelector(Parent, Order)
 	Corner.Parent = Button
 
 	local function Refresh()
-		Button.Text = "  Fonte: " .. tostring(FontList[FontIndex]):gsub("Enum.Font.", "")
+		Button.Text =
+			"  Fonte: "
+			.. tostring(FontList[FontIndex]):gsub("Enum.Font.", "")
 	end
 
 	Button.MouseButton1Click:Connect(function()
@@ -294,6 +331,7 @@ local function CreateFontSelector(Parent, Order)
 		end
 
 		Config.Font = FontList[FontIndex]
+
 		Refresh()
 	end)
 
@@ -352,7 +390,7 @@ CreateToggle(
 
 CreateNumberBox(
 	PrioritySection,
-	"Raio de prioridade (Studs)",
+	"Raio de prioridade",
 	function()
 		return Config.PriorityStuds
 	end,
@@ -534,7 +572,157 @@ CreateNumberBox(
 
 CreateFontSelector(DamageSection, 14)
 
-local DeathSection = CreateSection("Death Indicator", 3)
+local PositionSection = CreateSection("Posição Mouse / FPS / MS", 3)
+
+CreateNumberBox(
+	PositionSection,
+	"Damage Mouse X",
+	function()
+		return Config.MouseDamageOffsetX
+	end,
+	function(Value)
+		Config.MouseDamageOffsetX = Value
+	end,
+	1
+)
+
+CreateNumberBox(
+	PositionSection,
+	"Damage Mouse Y",
+	function()
+		return Config.MouseDamageOffsetY
+	end,
+	function(Value)
+		Config.MouseDamageOffsetY = Value
+	end,
+	2
+)
+
+CreateNumberBox(
+	PositionSection,
+	"FPS / MS X",
+	function()
+		return Config.PerformanceOffsetX
+	end,
+	function(Value)
+		Config.PerformanceOffsetX = Value
+	end,
+	3
+)
+
+CreateNumberBox(
+	PositionSection,
+	"FPS / MS Y",
+	function()
+		return Config.PerformanceOffsetY
+	end,
+	function(Value)
+		Config.PerformanceOffsetY = Value
+	end,
+	4
+)
+
+local TraceSection = CreateSection("Trace Player", 4)
+
+CreateToggle(
+	TraceSection,
+	"Trace Player",
+	function()
+		return Config.TracePlayer
+	end,
+	function(Value)
+		Config.TracePlayer = Value
+	end,
+	1
+)
+
+CreateToggle(
+	TraceSection,
+	"Trace Player Mouse",
+	function()
+		return Config.TracePlayerMouse
+	end,
+	function(Value)
+		Config.TracePlayerMouse = Value
+	end,
+	2
+)
+
+CreateToggle(
+	TraceSection,
+	"Player morto = vermelho",
+	function()
+		return Config.TraceMouseDeadRed
+	end,
+	function(Value)
+		Config.TraceMouseDeadRed = Value
+	end,
+	3
+)
+
+CreateNumberBox(
+	TraceSection,
+	"Comprimento",
+	function()
+		return Config.TraceLength
+	end,
+	function(Value)
+		Config.TraceLength = math.max(1, Value)
+	end,
+	4
+)
+
+CreateNumberBox(
+	TraceSection,
+	"Espessura",
+	function()
+		return Config.TraceThickness
+	end,
+	function(Value)
+		Config.TraceThickness = math.max(0.5, Value)
+	end,
+	5
+)
+
+local HealthSection = CreateSection("Health Players", 5)
+
+CreateToggle(
+	HealthSection,
+	"Health Players",
+	function()
+		return Config.HealthPlayers
+	end,
+	function(Value)
+		Config.HealthPlayers = Value
+	end,
+	1
+)
+
+CreateNumberBox(
+	HealthSection,
+	"Tamanho da vida",
+	function()
+		return Config.HealthTextSize
+	end,
+	function(Value)
+		Config.HealthTextSize = math.max(8, Value)
+	end,
+	2
+)
+
+CreateNumberBox(
+	HealthSection,
+	"Distância máxima",
+	function()
+		return Config.HealthMaxDistance
+	end,
+	function(Value)
+		Config.HealthMaxDistance = math.max(1, Value)
+	end,
+	3
+)
+
+local DeathSection = CreateSection("Death Indicator", 6)
 
 CreateToggle(
 	DeathSection,
@@ -584,7 +772,7 @@ CreateNumberBox(
 	4
 )
 
-local PerformanceSection = CreateSection("FPS / MS / Mouse", 4)
+local PerformanceSection = CreateSection("FPS / MS / Mouse", 7)
 
 CreateToggle(
 	PerformanceSection,
@@ -623,7 +811,8 @@ CreateToggle(
 )
 
 local PerformanceLabel = Instance.new("TextLabel")
-PerformanceLabel.Size = UDim2.fromOffset(150, 30)
+PerformanceLabel.Name = "Performance"
+PerformanceLabel.Size = UDim2.fromOffset(200, 30)
 PerformanceLabel.BackgroundTransparency = 1
 PerformanceLabel.TextColor3 = Color3.new(1, 1, 1)
 PerformanceLabel.TextSize = 13
@@ -631,18 +820,6 @@ PerformanceLabel.Font = Enum.Font.GothamBold
 PerformanceLabel.TextXAlignment = Enum.TextXAlignment.Left
 PerformanceLabel.Visible = false
 PerformanceLabel.Parent = ScreenGui
-
-local function IsEnemy(Player)
-	if not Player then
-		return false
-	end
-
-	if not LocalPlayer.Team or not Player.Team then
-		return true
-	end
-
-	return Player.Team ~= LocalPlayer.Team
-end
 
 local function GetRoot(Player)
 	local Character = Player.Character
@@ -664,14 +841,20 @@ local function GetHumanoid(Player)
 	return Character:FindFirstChildOfClass("Humanoid")
 end
 
-local function GetNearestTarget()
-	local Character = LocalPlayer.Character
-
-	if not Character then
-		return nil
+local function IsEnemy(Player)
+	if not Player or Player == LocalPlayer then
+		return false
 	end
 
-	local LocalRoot = Character:FindFirstChild("HumanoidRootPart")
+	if not LocalPlayer.Team or not Player.Team then
+		return true
+	end
+
+	return Player.Team ~= LocalPlayer.Team
+end
+
+local function GetNearestTarget()
+	local LocalRoot = GetRoot(LocalPlayer)
 
 	if not LocalRoot then
 		return nil
@@ -687,17 +870,19 @@ local function GetNearestTarget()
 			local Humanoid = GetHumanoid(Player)
 
 			if Root and Humanoid and Humanoid.Health > 0 then
-				local Distance = (Root.Position - LocalRoot.Position).Magnitude
+				local Distance =
+					(Root.Position - LocalRoot.Position).Magnitude
 
 				if Distance <= Config.MaxDistance then
 					local Candidate = {
 						Player = Player,
-						Root = Root,
 						Distance = Distance,
 						Enemy = IsEnemy(Player)
 					}
 
-					if Config.PriorityEnabled and Distance <= Config.PriorityStuds then
+					if Config.PriorityEnabled
+						and Distance <= Config.PriorityStuds then
+
 						table.insert(PriorityCandidates, Candidate)
 					elseif not Config.OnlyPriorityRange then
 						if Candidate.Enemy then
@@ -711,7 +896,7 @@ local function GetNearestTarget()
 		end
 	end
 
-	local function SortByDistance(List)
+	local function SortDistance(List)
 		table.sort(List, function(A, B)
 			return A.Distance < B.Distance
 		end)
@@ -721,20 +906,24 @@ local function GetNearestTarget()
 
 	if Config.PriorityEnabled and #PriorityCandidates > 0 then
 		if Config.PrioritizeEnemies then
-			local PriorityEnemies = {}
+			local EnemyPriority = {}
 
 			for _, Candidate in ipairs(PriorityCandidates) do
 				if Candidate.Enemy then
-					table.insert(PriorityEnemies, Candidate)
+					table.insert(EnemyPriority, Candidate)
 				end
 			end
 
-			if #PriorityEnemies > 0 then
-				return SortByDistance(PriorityEnemies)[1].Player
+			if #EnemyPriority > 0 then
+				SortDistance(EnemyPriority)
+
+				return EnemyPriority[1].Player
 			end
 		end
 
-		return SortByDistance(PriorityCandidates)[1].Player
+		SortDistance(PriorityCandidates)
+
+		return PriorityCandidates[1].Player
 	end
 
 	if Config.OnlyPriorityRange then
@@ -742,17 +931,75 @@ local function GetNearestTarget()
 	end
 
 	if Config.PrioritizeEnemies and #EnemyCandidates > 0 then
-		return SortByDistance(EnemyCandidates)[1].Player
+		SortDistance(EnemyCandidates)
+
+		return EnemyCandidates[1].Player
 	end
 
 	if #NormalCandidates > 0 then
-		return SortByDistance(NormalCandidates)[1].Player
+		SortDistance(NormalCandidates)
+
+		return NormalCandidates[1].Player
 	end
 
 	return nil
 end
 
-local function CreateIndicator(Player, Amount)
+local function NormalizeDamage(OldHealth, NewHealth)
+	if typeof(OldHealth) ~= "number"
+		or typeof(NewHealth) ~= "number" then
+		return nil
+	end
+
+	if OldHealth ~= OldHealth or NewHealth ~= NewHealth then
+		return nil
+	end
+
+	if math.abs(OldHealth) > 1000000
+		or math.abs(NewHealth) > 1000000 then
+		return nil
+	end
+
+	if NewHealth >= OldHealth then
+		return nil
+	end
+
+	local Damage = OldHealth - NewHealth
+
+	if Damage <= 0 then
+		return nil
+	end
+
+	Damage = math.min(Damage, OldHealth)
+
+	if Damage <= 0 or Damage > 1000000 then
+		return nil
+	end
+
+	Damage = math.floor(Damage * 100 + 0.5) / 100
+
+	if Damage == 0 then
+		return nil
+	end
+
+	return Damage
+end
+
+local function FormatDamage(Damage)
+	if Damage == nil then
+		return nil
+	end
+
+	Damage = math.floor(Damage * 100 + 0.5) / 100
+
+	if Damage % 1 == 0 then
+		return string.format("%d", Damage)
+	end
+
+	return string.format("%.2f", Damage):gsub("0+$", ""):gsub("%.$", "")
+end
+
+local function CreateIndicator(Player, Damage)
 	if not Config.DamageEnabled then
 		return
 	end
@@ -763,29 +1010,61 @@ local function CreateIndicator(Player, Amount)
 		return
 	end
 
+	local DamageText = FormatDamage(Damage)
+
+	if not DamageText then
+		return
+	end
+
 	local Billboard = Instance.new("BillboardGui")
-	Billboard.Name = "Damage_" .. Player.UserId
+	Billboard.Name = "DamageIndicator"
 	Billboard.Adornee = Root
 	Billboard.AlwaysOnTop = Config.ThroughWalls
 	Billboard.Size = UDim2.fromOffset(150, 60)
+
+	local OffsetX = 0
+	local OffsetY = 2
+	local OffsetZ = 0
+
+	if Config.RandomPosition then
+		OffsetX =
+			math.random(-100, 100)
+			/ 100
+			* Config.RandomX
+
+		OffsetY =
+			2
+			+ math.random(-100, 100)
+			/ 100
+			* Config.RandomY
+
+		OffsetZ =
+			math.random(-100, 100)
+			/ 100
+			* Config.RandomZ
+	end
+
 	Billboard.StudsOffset = Vector3.new(
-		Config.RandomPosition and math.random(-100, 100) / 100 * Config.RandomX or 0,
-		Config.RandomPosition and math.random(-100, 100) / 100 * Config.RandomY + 2 or 2,
-		Config.RandomPosition and math.random(-100, 100) / 100 * Config.RandomZ or 0
+		OffsetX,
+		OffsetY,
+		OffsetZ
 	)
+
 	Billboard.Parent = ScreenGui
 
 	local Label = Instance.new("TextLabel")
 	Label.Size = UDim2.fromScale(1, 1)
 	Label.BackgroundTransparency = 1
-	Label.Text = "-" .. tostring(Amount)
+	Label.Text = "-" .. DamageText
 	Label.TextColor3 = Config.TextColor
 	Label.TextTransparency = Config.TextTransparency
 	Label.TextSize = Config.TextSize
 	Label.Font = Config.Font
-	Label.TextStrokeTransparency = Config.StrokeEnabled and Config.StrokeTransparency or 1
 	Label.TextStrokeColor3 = Config.StrokeColor
-	Label.TextStrokeTransparency = Config.StrokeEnabled and Config.StrokeTransparency or 1
+	Label.TextStrokeTransparency =
+		Config.StrokeEnabled
+		and Config.StrokeTransparency
+		or 1
 	Label.Parent = Billboard
 
 	local StartOffset = Billboard.StudsOffset
@@ -801,11 +1080,13 @@ local function CreateIndicator(Player, Amount)
 			Enum.EasingDirection.Out
 		)
 
-		local Tween = TweenService:Create(
+		local PositionTween = TweenService:Create(
 			Billboard,
 			Info,
 			{
-				StudsOffset = StartOffset + Vector3.new(0, Config.DamageRise, 0)
+				StudsOffset =
+					StartOffset
+					+ Vector3.new(0, Config.DamageRise, 0)
 			}
 		)
 
@@ -818,17 +1099,25 @@ local function CreateIndicator(Player, Amount)
 			}
 		)
 
-		Tween:Play()
+		PositionTween:Play()
 		TextTween:Play()
 
-		Tween.Completed:Once(function()
-			Billboard:Destroy()
+		PositionTween.Completed:Once(function()
+			if Billboard then
+				Billboard:Destroy()
+			end
 		end)
 	end)
 end
 
-local function CreateMouseDamage(Amount)
+local function CreateMouseDamage(Damage)
 	if not Config.MouseDamage then
+		return
+	end
+
+	local DamageText = FormatDamage(Damage)
+
+	if not DamageText then
 		return
 	end
 
@@ -836,27 +1125,36 @@ local function CreateMouseDamage(Amount)
 	Label.Name = "MouseDamage"
 	Label.Size = UDim2.fromOffset(120, 45)
 	Label.BackgroundTransparency = 1
-	Label.Text = "-" .. tostring(Amount)
+	Label.Text = "-" .. DamageText
 	Label.TextColor3 = Config.TextColor
 	Label.TextSize = Config.TextSize
 	Label.Font = Config.Font
 	Label.TextStrokeColor3 = Config.StrokeColor
-	Label.TextStrokeTransparency = Config.StrokeEnabled and Config.StrokeTransparency or 1
+	Label.TextStrokeTransparency =
+		Config.StrokeEnabled
+		and Config.StrokeTransparency
+		or 1
+
 	Label.Position = UDim2.fromOffset(
-		MousePosition.X + Config.MouseOffsetX,
-		MousePosition.Y + Config.MouseOffsetY
+		MousePosition.X + Config.MouseDamageOffsetX,
+		MousePosition.Y + Config.MouseDamageOffsetY
 	)
+
 	Label.Parent = ScreenGui
 
-	local StartPosition = Label.Position
+	local Start = Label.Position
 
 	local Tween = TweenService:Create(
 		Label,
-		TweenInfo.new(Config.DamageDuration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		TweenInfo.new(
+			Config.DamageDuration,
+			Enum.EasingStyle.Quad,
+			Enum.EasingDirection.Out
+		),
 		{
 			Position = UDim2.fromOffset(
-				StartPosition.X,
-				StartPosition.Y - 35
+				Start.X.Offset,
+				Start.Y.Offset - 35
 			),
 			TextTransparency = 1,
 			TextStrokeTransparency = 1
@@ -897,40 +1195,351 @@ local function CreateDeathIndicator(Player)
 	Label.TextSize = Config.DeathTextSize
 	Label.Font = Enum.Font.GothamBlack
 	Label.TextStrokeColor3 = Config.DeathStrokeColor
-	Label.TextStrokeTransparency = Config.DeathStrokeEnabled
+	Label.TextStrokeTransparency =
+		Config.DeathStrokeEnabled
 		and Config.DeathStrokeTransparency
 		or 1
 	Label.Parent = Billboard
 
-	local TweenInfoData = TweenInfo.new(
+	local Info = TweenInfo.new(
 		Config.DeathDuration,
 		Enum.EasingStyle.Quad,
 		Enum.EasingDirection.Out
 	)
 
-	local PositionTween = TweenService:Create(
+	local MoveTween = TweenService:Create(
 		Billboard,
-		TweenInfoData,
+		Info,
 		{
-			StudsOffset = Vector3.new(0, 2 + Config.DeathRise, 0)
+			StudsOffset =
+				Vector3.new(
+					0,
+					2 + Config.DeathRise,
+					0
+				)
 		}
 	)
 
-	local TextTween = TweenService:Create(
+	local FadeTween = TweenService:Create(
 		Label,
-		TweenInfoData,
+		Info,
 		{
 			TextTransparency = 1,
 			TextStrokeTransparency = 1
 		}
 	)
 
-	PositionTween:Play()
-	TextTween:Play()
+	MoveTween:Play()
+	FadeTween:Play()
 
-	PositionTween.Completed:Once(function()
+	MoveTween.Completed:Once(function()
 		Billboard:Destroy()
 	end)
+end
+
+local function RemoveHealthLabel(Player)
+	local Label = HealthLabels[Player]
+
+	if Label then
+		Label:Destroy()
+		HealthLabels[Player] = nil
+	end
+end
+
+local function CreateHealthLabel(Player)
+	if HealthLabels[Player] then
+		return HealthLabels[Player]
+	end
+
+	local Root = GetRoot(Player)
+
+	if not Root then
+		return nil
+	end
+
+	local Billboard = Instance.new("BillboardGui")
+	Billboard.Name = "HealthPlayer"
+	Billboard.Adornee = Root
+	Billboard.Size = UDim2.fromOffset(120, 35)
+	Billboard.StudsOffset = Vector3.new(0, 3.2, 0)
+	Billboard.AlwaysOnTop = Config.ThroughWalls
+	Billboard.Parent = ScreenGui
+
+	local Label = Instance.new("TextLabel")
+	Label.Size = UDim2.fromScale(1, 1)
+	Label.BackgroundTransparency = 1
+	Label.Text = "100%"
+	Label.TextColor3 = Color3.new(1, 1, 1)
+	Label.TextStrokeColor3 = Color3.new(0, 0, 0)
+	Label.TextStrokeTransparency = 0.2
+	Label.TextSize = Config.HealthTextSize
+	Label.Font = Enum.Font.GothamBold
+	Label.Parent = Billboard
+
+	HealthLabels[Player] = Billboard
+
+	return Billboard
+end
+
+local function UpdateHealthPlayer(Player)
+	if not Config.HealthPlayers then
+		RemoveHealthLabel(Player)
+		return
+	end
+
+	local Root = GetRoot(Player)
+	local Humanoid = GetHumanoid(Player)
+	local LocalRoot = GetRoot(LocalPlayer)
+
+	if not Root or not Humanoid or not LocalRoot then
+		RemoveHealthLabel(Player)
+		return
+	end
+
+	local Distance =
+		(Root.Position - LocalRoot.Position).Magnitude
+
+	if Distance > Config.HealthMaxDistance then
+		if HealthLabels[Player] then
+			HealthLabels[Player].Enabled = false
+		end
+
+		return
+	end
+
+	local Billboard = CreateHealthLabel(Player)
+
+	if not Billboard then
+		return
+	end
+
+	Billboard.Enabled = true
+	Billboard.AlwaysOnTop = Config.ThroughWalls
+
+	local Label = Billboard:FindFirstChildOfClass("TextLabel")
+
+	if not Label then
+		return
+	end
+
+	local MaxHealth = math.max(Humanoid.MaxHealth, 1)
+
+	local Percentage =
+		math.clamp(
+			(Humanoid.Health / MaxHealth) * 100,
+			0,
+			100
+		)
+
+	Label.Text =
+		string.format(
+			"%d%%",
+			math.floor(Percentage + 0.5)
+		)
+
+	Label.TextSize = Config.HealthTextSize
+
+	if Percentage <= 25 then
+		Label.TextColor3 =
+			Color3.fromRGB(255, 60, 60)
+	elseif Percentage <= 50 then
+		Label.TextColor3 =
+			Color3.fromRGB(255, 200, 60)
+	else
+		Label.TextColor3 =
+			Color3.fromRGB(255, 255, 255)
+	end
+end
+
+local function RemovePlayerTrace(Player)
+	local Data = PlayerTraces[Player]
+
+	if not Data then
+		return
+	end
+
+	if Data.Line then
+		Data.Line:Remove()
+	end
+
+	PlayerTraces[Player] = nil
+end
+
+local function GetPlayerTrace(Player)
+	if not DrawingAvailable then
+		return nil
+	end
+
+	if PlayerTraces[Player] then
+		return PlayerTraces[Player]
+	end
+
+	local Line = Drawing.new("Line")
+
+	Line.Visible = false
+	Line.Color = Color3.fromRGB(50, 255, 90)
+	Line.Thickness = Config.TraceThickness
+	Line.Transparency = 1
+
+	PlayerTraces[Player] = {
+		Line = Line
+	}
+
+	return PlayerTraces[Player]
+end
+
+local function UpdatePlayerTrace(Player)
+	if not DrawingAvailable then
+		return
+	end
+
+	local Data = PlayerTraces[Player]
+
+	if not Config.TracePlayer then
+		if Data and Data.Line then
+			Data.Line.Visible = false
+		end
+
+		return
+	end
+
+	local Character = Player.Character
+
+	if not Character then
+		return
+	end
+
+	local Root = Character:FindFirstChild("HumanoidRootPart")
+	local Head = Character:FindFirstChild("Head")
+	local Humanoid = Character:FindFirstChildOfClass("Humanoid")
+
+	if not Root
+		or not Head
+		or not Humanoid
+		or Humanoid.Health <= 0 then
+
+		if Data and Data.Line then
+			Data.Line.Visible = false
+		end
+
+		return
+	end
+
+	local Camera = workspace.CurrentCamera
+
+	if not Camera then
+		return
+	end
+
+	local StartWorld = Head.Position
+	local EndWorld =
+		StartWorld
+		+ Root.CFrame.LookVector * Config.TraceLength
+
+	local StartPosition, StartVisible =
+		Camera:WorldToViewportPoint(StartWorld)
+
+	local EndPosition, EndVisible =
+		Camera:WorldToViewportPoint(EndWorld)
+
+	Data = GetPlayerTrace(Player)
+
+	if not Data then
+		return
+	end
+
+	local Line = Data.Line
+
+	Line.From = Vector2.new(
+		StartPosition.X,
+		StartPosition.Y
+	)
+
+	Line.To = Vector2.new(
+		EndPosition.X,
+		EndPosition.Y
+	)
+
+	Line.Color = Color3.fromRGB(50, 255, 90)
+	Line.Thickness = Config.TraceThickness
+	Line.Visible = StartVisible or EndVisible
+end
+
+local function CreateMouseTrace()
+	if not DrawingAvailable or MouseTrace then
+		return
+	end
+
+	MouseTrace = Drawing.new("Line")
+
+	MouseTrace.Visible = false
+	MouseTrace.Color = Color3.fromRGB(50, 255, 90)
+	MouseTrace.Thickness = Config.TraceThickness
+	MouseTrace.Transparency = 1
+end
+
+local function UpdateMouseTrace()
+	if not DrawingAvailable then
+		return
+	end
+
+	if not Config.TracePlayerMouse then
+		if MouseTrace then
+			MouseTrace.Visible = false
+		end
+
+		return
+	end
+
+	CreateMouseTrace()
+
+	if not MouseTrace then
+		return
+	end
+
+	local Target = CurrentTarget
+
+	if not Target then
+		MouseTrace.Visible = false
+		return
+	end
+
+	local Root = GetRoot(Target)
+	local Humanoid = GetHumanoid(Target)
+	local Camera = workspace.CurrentCamera
+
+	if not Root or not Humanoid or not Camera then
+		MouseTrace.Visible = false
+		return
+	end
+
+	local TargetPosition, Visible =
+		Camera:WorldToViewportPoint(Root.Position)
+
+	if not Visible then
+		MouseTrace.Visible = false
+		return
+	end
+
+	MouseTrace.From = MousePosition
+
+	MouseTrace.To = Vector2.new(
+		TargetPosition.X,
+		TargetPosition.Y
+	)
+
+	if Humanoid.Health <= 0
+		and Config.TraceMouseDeadRed then
+
+		MouseTrace.Color =
+			Color3.fromRGB(255, 45, 45)
+	else
+		MouseTrace.Color =
+			Color3.fromRGB(50, 255, 90)
+	end
+
+	MouseTrace.Thickness = Config.TraceThickness
+	MouseTrace.Visible = true
 end
 
 local function TrackPlayer(Player)
@@ -941,7 +1550,8 @@ local function TrackPlayer(Player)
 	Tracked[Player] = true
 
 	local function TrackCharacter(Character)
-		local Humanoid = Character:WaitForChild("Humanoid", 5)
+		local Humanoid =
+			Character:WaitForChild("Humanoid", 5)
 
 		if not Humanoid then
 			return
@@ -950,58 +1560,90 @@ local function TrackPlayer(Player)
 		local LastHealth = Humanoid.Health
 		local DeadShown = false
 
-		local HealthConnection = Humanoid.HealthChanged:Connect(function(NewHealth)
-			if NewHealth < LastHealth then
-				local Damage = LastHealth - NewHealth
+		local HealthConnection =
+			Humanoid.HealthChanged:Connect(function(NewHealth)
 
-				if Damage > 0 then
+				local Damage =
+					NormalizeDamage(
+						LastHealth,
+						NewHealth
+					)
+
+				if Damage then
 					local Root = GetRoot(Player)
+					local LocalRoot = GetRoot(LocalPlayer)
 
-					if Root and LocalPlayer.Character then
-						local LocalRoot = GetRoot(LocalPlayer)
+					if Root and LocalRoot then
+						local Distance =
+							(Root.Position - LocalRoot.Position).Magnitude
 
-						if LocalRoot then
-							local Distance = (Root.Position - LocalRoot.Position).Magnitude
+						local Allowed
 
-							local Allowed = true
+						if Config.PriorityEnabled
+							and Config.OnlyPriorityRange then
 
-							if Config.PriorityEnabled and Config.OnlyPriorityRange then
-								Allowed = Distance <= Config.PriorityStuds
-							else
-								Allowed = Distance <= Config.MaxDistance
-							end
+							Allowed =
+								Distance <= Config.PriorityStuds
+						else
+							Allowed =
+								Distance <= Config.MaxDistance
+						end
 
-							if Allowed then
-								CreateIndicator(Player, Damage)
+						if Allowed then
+							CreateIndicator(
+								Player,
+								Damage
+							)
 
-								if CurrentTarget == Player then
-									CreateMouseDamage(Damage)
-								end
+							if CurrentTarget == Player then
+								CreateMouseDamage(Damage)
 							end
 						end
 					end
 				end
-			end
 
-			if NewHealth <= 0 and not DeadShown then
-				DeadShown = true
-				CreateDeathIndicator(Player)
-			end
+				if NewHealth <= 0 and not DeadShown then
+					DeadShown = true
+					CreateDeathIndicator(Player)
+				end
 
-			LastHealth = NewHealth
-		end)
+				if typeof(NewHealth) == "number"
+					and NewHealth == NewHealth then
 
-		table.insert(Connections, HealthConnection)
+					LastHealth = NewHealth
+				end
+			end)
+
+		table.insert(
+			Connections,
+			HealthConnection
+		)
+
+		table.insert(
+			Connections,
+			Humanoid.Died:Connect(function()
+				if not DeadShown then
+					DeadShown = true
+					CreateDeathIndicator(Player)
+				end
+			end)
+		)
 	end
 
 	if Player.Character then
-		task.spawn(TrackCharacter, Player.Character)
+		task.spawn(
+			TrackCharacter,
+			Player.Character
+		)
 	end
 
 	table.insert(
 		Connections,
 		Player.CharacterAdded:Connect(function(Character)
-			task.spawn(TrackCharacter, Character)
+			task.spawn(
+				TrackCharacter,
+				Character
+			)
 		end)
 	)
 end
@@ -1015,7 +1657,28 @@ table.insert(
 	Players.PlayerAdded:Connect(TrackPlayer)
 )
 
-local LastTargetUpdate = 0
+table.insert(
+	Connections,
+	Players.PlayerRemoving:Connect(function(Player)
+		RemovePlayerTrace(Player)
+		RemoveHealthLabel(Player)
+		Tracked[Player] = nil
+	end)
+)
+
+table.insert(
+	Connections,
+	UserInputService.InputChanged:Connect(function(Input)
+		if Input.UserInputType == Enum.UserInputType.MouseMovement then
+			MousePosition =
+				UserInputService:GetMouseLocation()
+
+		elseif Input.UserInputType == Enum.UserInputType.Touch then
+			LastTouchPosition = Input.Position
+			MousePosition = LastTouchPosition
+		end
+	end)
+)
 
 table.insert(
 	Connections,
@@ -1028,10 +1691,6 @@ table.insert(
 		end
 	end)
 )
-
-local FPS = 0
-local Frames = 0
-local LastFPSUpdate = os.clock()
 
 table.insert(
 	Connections,
@@ -1052,39 +1711,53 @@ table.insert(
 			local Parts = {}
 
 			if Config.ShowFPS then
-				table.insert(Parts, "FPS: " .. tostring(FPS))
+				table.insert(
+					Parts,
+					"FPS: " .. tostring(FPS)
+				)
 			end
 
 			if Config.ShowMS then
-				local Ping = Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
-				table.insert(Parts, "Ms: " .. tostring(math.floor(Ping)))
+				local Ping = 0
+
+				pcall(function()
+					Ping =
+						Stats.Network
+						.ServerStatsItem["Data Ping"]
+						:GetValue()
+				end)
+
+				table.insert(
+					Parts,
+					"Ms: "
+					.. tostring(math.floor(Ping))
+				)
 			end
 
-			PerformanceLabel.Text = table.concat(Parts, " | ")
+			PerformanceLabel.Text =
+				table.concat(Parts, " | ")
 
-			PerformanceLabel.Position = UDim2.fromOffset(
-				MousePosition.X + Config.PerformanceOffsetX,
-				MousePosition.Y + Config.PerformanceOffsetY
-			)
+			PerformanceLabel.Position =
+				UDim2.fromOffset(
+					MousePosition.X
+					+ Config.PerformanceOffsetX,
+					MousePosition.Y
+					+ Config.PerformanceOffsetY
+				)
 		else
 			PerformanceLabel.Visible = false
 		end
-	end)
-)
 
-table.insert(
-	Connections,
-	UserInputService.InputChanged:Connect(function(Input)
-		if Input.UserInputType == Enum.UserInputType.MouseMovement then
-			MousePosition = UserInputService:GetMouseLocation()
-		elseif Input.UserInputType == Enum.UserInputType.Touch then
-			LastTouchPosition = Input.Position
-			MousePosition = LastTouchPosition
+		for _, Player in ipairs(Players:GetPlayers()) do
+			if Player ~= LocalPlayer then
+				UpdatePlayerTrace(Player)
+				UpdateHealthPlayer(Player)
+			end
 		end
+
+		UpdateMouseTrace()
 	end)
 )
-
-MousePosition = UserInputService:GetMouseLocation()
 
 local Dragging = false
 local DragStart
@@ -1120,14 +1793,16 @@ table.insert(
 			return
 		end
 
-		local Delta = Input.Position - DragStart
+		local Delta =
+			Input.Position - DragStart
 
-		Main.Position = UDim2.new(
-			StartPosition.X.Scale,
-			StartPosition.X.Offset + Delta.X,
-			StartPosition.Y.Scale,
-			StartPosition.Y.Offset + Delta.Y
-		)
+		Main.Position =
+			UDim2.new(
+				StartPosition.X.Scale,
+				StartPosition.X.Offset + Delta.X,
+				StartPosition.Y.Scale,
+				StartPosition.Y.Offset + Delta.Y
+			)
 	end)
 )
 
@@ -1149,7 +1824,27 @@ local function Cleanup()
 	end
 
 	table.clear(Connections)
-	table.clear(Tracked)
+
+	for _, Data in pairs(PlayerTraces) do
+		if Data.Line then
+			Data.Line:Remove()
+		end
+	end
+
+	table.clear(PlayerTraces)
+
+	if MouseTrace then
+		MouseTrace:Remove()
+		MouseTrace = nil
+	end
+
+	for _, Label in pairs(HealthLabels) do
+		if Label then
+			Label:Destroy()
+		end
+	end
+
+	table.clear(HealthLabels)
 
 	if ScreenGui then
 		ScreenGui:Destroy()

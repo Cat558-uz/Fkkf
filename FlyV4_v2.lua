@@ -2335,21 +2335,187 @@ pcall(function()
 	)
 end)
 
+local flyPoseMotors = {}
+local flyAnimateScript
+local flyAnimateWasEnabled = nil
+local flyBaseCFrames = {}
+local flyPoseStart = 0
+
+local function getFlyMotor(character, name)
+	local motor = character:FindFirstChild(name, true)
+	if motor and motor:IsA("Motor6D") then
+		return motor
+	end
+	return nil
+end
+
+local function captureFlyPose(character)
+	table.clear(flyPoseMotors)
+	table.clear(flyBaseCFrames)
+
+	local names = {
+		"RootJoint",
+		"Root",
+		"Waist",
+		"Neck",
+		"LeftShoulder",
+		"RightShoulder",
+		"Left Hip",
+		"Right Hip",
+		"LeftHip",
+		"RightHip",
+		"LeftElbow",
+		"RightElbow",
+		"LeftWrist",
+		"RightWrist"
+	}
+
+	local seen = {}
+	for _, name in ipairs(names) do
+		local motor = getFlyMotor(character, name)
+		if motor and not seen[motor] then
+			seen[motor] = true
+			flyPoseMotors[#flyPoseMotors + 1] = motor
+			flyBaseCFrames[motor] = motor.Transform
+		end
+	end
+end
+
+local function stopCharacterAnimations(character)
+	flyAnimateScript = character:FindFirstChild("Animate")
+	if flyAnimateScript and (flyAnimateScript:IsA("LocalScript") or flyAnimateScript:IsA("Script")) then
+		flyAnimateWasEnabled = flyAnimateScript.Enabled
+		flyAnimateScript.Enabled = false
+	end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		local animator = humanoid:FindFirstChildOfClass("Animator")
+		if animator then
+			for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+				pcall(function()
+					track:Stop(0.08)
+				end)
+			end
+		end
+	end
+end
+
+local function restoreCharacterAnimations(character)
+	for motor, transform in pairs(flyBaseCFrames) do
+		if motor and motor.Parent then
+			motor.Transform = transform
+		end
+	end
+
+	table.clear(flyPoseMotors)
+	table.clear(flyBaseCFrames)
+
+	if flyAnimateScript and flyAnimateScript.Parent then
+		flyAnimateScript.Enabled = flyAnimateWasEnabled ~= false
+	end
+
+	flyAnimateScript = nil
+	flyAnimateWasEnabled = nil
+end
+
+local function updateFlyPose(t)
+	if not flyAnimation then
+		for motor, transform in pairs(flyBaseCFrames) do
+			if motor and motor.Parent then
+				motor.Transform = transform
+			end
+		end
+		return
+	end
+
+	local character = speaker.Character
+	if not character then
+		return
+	end
+
+	local bob = math.sin(t * 3.4) * math.rad(2.5)
+	local sway = math.sin(t * 2.2) * math.rad(3)
+
+	for motor, base in pairs(flyBaseCFrames) do
+		if motor and motor.Parent then
+			local name = motor.Name
+			local offset = CFrame.new()
+
+			if name == "RootJoint" or name == "Root" then
+				offset = CFrame.Angles(math.rad(-7) + bob, sway, 0)
+			elseif name == "Waist" then
+				offset = CFrame.Angles(math.rad(-10) + bob, sway, 0)
+			elseif name == "Neck" then
+				offset = CFrame.Angles(math.rad(4) - bob * 0.35, -sway * 0.35, 0)
+			elseif name == "LeftShoulder" or name == "Left Shoulder" then
+				offset = CFrame.Angles(math.rad(-34), math.rad(-12), math.rad(-8))
+			elseif name == "RightShoulder" or name == "Right Shoulder" then
+				offset = CFrame.Angles(math.rad(-34), math.rad(12), math.rad(8))
+			elseif name == "LeftElbow" then
+				offset = CFrame.Angles(math.rad(-18), 0, math.rad(-3))
+			elseif name == "RightElbow" then
+				offset = CFrame.Angles(math.rad(-18), 0, math.rad(3))
+			elseif name == "LeftHip" or name == "Left Hip" then
+				offset = CFrame.Angles(math.rad(9), 0, math.rad(-4))
+			elseif name == "RightHip" or name == "Right Hip" then
+				offset = CFrame.Angles(math.rad(9), 0, math.rad(4))
+			end
+
+			motor.Transform = base * offset
+		end
+	end
+end
+
 local function stopFly()
 	nowe = false
 	tpwalking = false
-	if flyRenderConnection then flyRenderConnection:Disconnect(); flyRenderConnection = nil end
-	if flyInputBeganConnection then flyInputBeganConnection:Disconnect(); flyInputBeganConnection = nil end
-	if flyInputEndedConnection then flyInputEndedConnection:Disconnect(); flyInputEndedConnection = nil end
-	if flyBodyVelocity then flyBodyVelocity:Destroy(); flyBodyVelocity = nil end
-	if flyBodyGyro then flyBodyGyro:Destroy(); flyBodyGyro = nil end
-	for key in pairs(flyKeys) do flyKeys[key] = false end
+
+	if flyRenderConnection then
+		flyRenderConnection:Disconnect()
+		flyRenderConnection = nil
+	end
+
+	if flyInputBeganConnection then
+		flyInputBeganConnection:Disconnect()
+		flyInputBeganConnection = nil
+	end
+
+	if flyInputEndedConnection then
+		flyInputEndedConnection:Disconnect()
+		flyInputEndedConnection = nil
+	end
+
+	if flyBodyVelocity then
+		flyBodyVelocity:Destroy()
+		flyBodyVelocity = nil
+	end
+
+	if flyBodyGyro then
+		flyBodyGyro:Destroy()
+		flyBodyGyro = nil
+	end
+
+	for key in pairs(flyKeys) do
+		flyKeys[key] = false
+	end
+
 	flyUpInput = 0
 	flyDownInput = 0
+
 	local character = speaker.Character
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 	local root = character and character:FindFirstChild("HumanoidRootPart")
-	if root then root.AssemblyLinearVelocity = Vector3.zero; root.AssemblyAngularVelocity = Vector3.zero end
+
+	if character then
+		restoreCharacterAnimations(character)
+	end
+
+	if root then
+		root.AssemblyAngularVelocity = Vector3.zero
+		root.AssemblyLinearVelocity = Vector3.zero
+	end
+
 	if humanoid then
 		humanoid.PlatformStand = false
 		humanoid.AutoRotate = true
@@ -2363,117 +2529,170 @@ end
 
 local function startFly()
 	stopFly()
-	nowe = true
-	tpwalking = true
+
 	local character = speaker.Character or speaker.CharacterAdded:Wait()
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	local root = character:FindFirstChild("HumanoidRootPart")
-	if not humanoid or not root then nowe = false; tpwalking = false; return end
+
+	if not humanoid or not root then
+		return
+	end
+
+	nowe = true
+	tpwalking = true
+	flyPoseStart = os.clock()
+
+	stopCharacterAnimations(character)
+	captureFlyPose(character)
+
 	humanoid.PlatformStand = true
 	humanoid.AutoRotate = false
 	humanoid:ChangeState(Enum.HumanoidStateType.Physics)
+
 	flyBodyVelocity = Instance.new("BodyVelocity")
 	flyBodyVelocity.Name = "FlyV4Velocity"
-	flyBodyVelocity.MaxForce = Vector3.new(1e9,1e9,1e9)
-	flyBodyVelocity.P = 50000
+	flyBodyVelocity.MaxForce = Vector3.new(1e9, 1e9, 1e9)
+	flyBodyVelocity.P = 25000
 	flyBodyVelocity.Velocity = Vector3.zero
 	flyBodyVelocity.Parent = root
-	if flyAnimation then
-		flyBodyGyro = Instance.new("BodyGyro")
-		flyBodyGyro.Name = "FlyV4Gyro"
-		flyBodyGyro.MaxTorque = Vector3.new(1e9,1e9,1e9)
-		flyBodyGyro.P = 50000
-		flyBodyGyro.D = 1000
-		flyBodyGyro.CFrame = root.CFrame
-		flyBodyGyro.Parent = root
-	end
-	flyInputBeganConnection = mini.MouseButton1Click:Connect(function()
-	if minimized then
+
+	flyBodyGyro = Instance.new("BodyGyro")
+	flyBodyGyro.Name = "FlyV4Gyro"
+	flyBodyGyro.MaxTorque = Vector3.new(1e9, 1e9, 1e9)
+	flyBodyGyro.P = 35000
+	flyBodyGyro.D = 1500
+	flyBodyGyro.CFrame = root.CFrame
+	flyBodyGyro.Parent = root
+
+	flyInputBeganConnection = UserInputService.InputBegan:Connect(function(input, processed)
+		if processed or not nowe then
+			return
+		end
+
+		if input.UserInputType == Enum.UserInputType.Keyboard then
+			if input.KeyCode == Enum.KeyCode.W then flyKeys.W = true
+			elseif input.KeyCode == Enum.KeyCode.S then flyKeys.S = true
+			elseif input.KeyCode == Enum.KeyCode.A then flyKeys.A = true
+			elseif input.KeyCode == Enum.KeyCode.D then flyKeys.D = true
+			elseif input.KeyCode == Enum.KeyCode.Space then flyKeys.Space = true
+			elseif input.KeyCode == Enum.KeyCode.LeftControl then flyKeys.LeftControl = true
+			end
+		end
+	end)
+
+	flyInputEndedConnection = UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType ~= Enum.UserInputType.Keyboard then
+			return
+		end
+
+		if input.KeyCode == Enum.KeyCode.W then flyKeys.W = false
+		elseif input.KeyCode == Enum.KeyCode.S then flyKeys.S = false
+		elseif input.KeyCode == Enum.KeyCode.A then flyKeys.A = false
+		elseif input.KeyCode == Enum.KeyCode.D then flyKeys.D = false
+		elseif input.KeyCode == Enum.KeyCode.Space then flyKeys.Space = false
+		elseif input.KeyCode == Enum.KeyCode.LeftControl then flyKeys.LeftControl = false
+		end
+	end)
+
+	flyRenderConnection = RunService.RenderStepped:Connect(function(dt)
+		if not nowe or closing then
+			return
+		end
+
+		local currentCharacter = speaker.Character
+		local currentHumanoid = currentCharacter and currentCharacter:FindFirstChildOfClass("Humanoid")
+		local currentRoot = currentCharacter and currentCharacter:FindFirstChild("HumanoidRootPart")
+		local camera = workspace.CurrentCamera
+
+		if not currentHumanoid or not currentRoot or not flyBodyVelocity or not flyBodyGyro then
+			return
+		end
+
+		if not flyBaseCFrames[next(flyBaseCFrames)] and currentCharacter then
+			captureFlyPose(currentCharacter)
+		end
+
+		local cameraCF = camera and camera.CFrame or currentRoot.CFrame
+		local forward = Vector3.new(cameraCF.LookVector.X, 0, cameraCF.LookVector.Z)
+		local right = Vector3.new(cameraCF.RightVector.X, 0, cameraCF.RightVector.Z)
+
+		if forward.Magnitude > 0 then forward = forward.Unit end
+		if right.Magnitude > 0 then right = right.Unit end
+
+		local move = Vector3.zero
+		if flyKeys.W then move += forward end
+		if flyKeys.S then move -= forward end
+		if flyKeys.D then move += right end
+		if flyKeys.A then move -= right end
+		if move.Magnitude > 1 then move = move.Unit end
+
+		local vertical = flyUpInput - flyDownInput
+		if flyKeys.Space then vertical += 1 end
+		if flyKeys.LeftControl then vertical -= 1 end
+		vertical = math.clamp(vertical, -1, 1)
+
+		local targetVelocity = move * (flySpeed * 55) + Vector3.new(0, vertical * flySpeed * 45, 0)
+		local blend = 1 - math.exp(-12 * math.max(dt, 0))
+		flyBodyVelocity.Velocity = flyBodyVelocity.Velocity:Lerp(targetVelocity, blend)
+
+		local look = forward
+		if look.Magnitude < 0.01 then
+			local flatLook = Vector3.new(currentRoot.CFrame.LookVector.X, 0, currentRoot.CFrame.LookVector.Z)
+			look = flatLook.Magnitude > 0 and flatLook.Unit or Vector3.new(0, 0, -1)
+		end
+
+		local targetCF = CFrame.lookAt(currentRoot.Position, currentRoot.Position + look, Vector3.yAxis)
+		flyBodyGyro.CFrame = targetCF
+
+		if flyAnimation then
+			updateFlyPose(os.clock() - flyPoseStart)
+		else
+			for motor, transform in pairs(flyBaseCFrames) do
+				if motor and motor.Parent then
+					motor.Transform = transform
+				end
+			end
+		end
+	end)
+end
+
+-- GUI fly controls
+onof.Activated:Connect(function()
+	if closing then
 		return
 	end
 
-	minimized = true
-
-	if ConfigFrame then
-		ConfigFrame.Visible = false
+	if nowe then
+		stopFly()
+	else
+		startFly()
 	end
 
-	TweenService:Create(
-		Frame,
-		TweenInfo.new(
-			0.25,
-			Enum.EasingStyle.Quart,
-			Enum.EasingDirection.InOut
-		),
-		{
-			Size =
-				UDim2.new(
-					0,
-					190,
-					0,
-					28
-				)
-		}
-	):Play()
-
-	up.Visible = false
-	down.Visible = false
-	onof.Visible = false
-	plus.Visible = false
-	speed.Visible = false
-	mine.Visible = false
-	mini.Visible = false
-	mini2.Visible = true
-	config.Visible = true
-
-	updateTopButtons()
+	updateLanguage()
 end)
 
-mini2.MouseButton1Click:Connect(function()
-	if not minimized then
-		return
-	end
+up.MouseButton1Down:Connect(function()
+	if nowe then flyUpInput = 1 end
+end)
 
-	minimized = false
+up.MouseButton1Up:Connect(function()
+	flyUpInput = 0
+end)
 
-	TweenService:Create(
-		Frame,
-		TweenInfo.new(
-			0.25,
-			Enum.EasingStyle.Quart,
-			Enum.EasingDirection.InOut
-		),
-		{
-			Size =
-				UDim2.new(
-					0,
-					190,
-					0,
-					57
-				)
-		}
-	):Play()
+up.MouseLeave:Connect(function()
+	flyUpInput = 0
+end)
 
-	task.delay(
-		0.12,
-		function()
-			if closing then
-				return
-			end
+down.MouseButton1Down:Connect(function()
+	if nowe then flyDownInput = 1 end
+end)
 
-			up.Visible = true
-			down.Visible = true
-			onof.Visible = true
-			plus.Visible = true
-			speed.Visible = true
-			mine.Visible = true
-			mini.Visible = true
-			mini2.Visible = false
-			config.Visible = true
+down.MouseButton1Up:Connect(function()
+	flyDownInput = 0
+end)
 
-			updateTopButtons()
-		end
-	)
+down.MouseLeave:Connect(function()
+	flyDownInput = 0
 end)
 
 local function closeGUI()
